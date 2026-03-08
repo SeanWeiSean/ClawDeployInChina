@@ -19,6 +19,7 @@ from deployer.logger import DeployerLogger
 NODE_MIRROR = "https://registry.npmmirror.com/binary.html?path=node/"
 NODE_DOWNLOAD_BASE = "https://registry.npmmirror.com/-/binary/node"
 NPM_REGISTRY = "https://registry.npmmirror.com"
+GIT_MIRROR_BASE = "https://registry.npmmirror.com/-/binary/git-for-windows"
 
 # Default install location
 DEFAULT_NODE_DIR = Path(os.environ.get(
@@ -36,6 +37,99 @@ class WindowsSetup:
         self.node_version = config.get("node.version", "22")
         self.node_dir = DEFAULT_NODE_DIR
         self._node_bin: Path | None = None
+
+    # ────────────────────── Git ──────────────────────
+
+    def ensure_git(self) -> bool:
+        """Install Git if not already available."""
+        if shutil.which("git"):
+            self.log.info("git already in PATH")
+            return True
+
+        self.log.step("Installing Git for Windows (npmmirror)…")
+        arch = self._get_arch()
+        # Resolve latest Git version from npmmirror
+        git_version = self._resolve_git_version()
+        if not git_version:
+            self.log.error("Could not resolve Git version")
+            return False
+
+        # Download portable Git (no installer needed, just extract)
+        bit = "64" if arch == "x64" else "32"
+        filename = f"PortableGit-{git_version}-{bit}-bit.7z.exe"
+        url = f"{GIT_MIRROR_BASE}/v{git_version}.windows.1/{filename}"
+
+        git_dir = Path.home() / ".openclaw-git"
+        try:
+            tmp_dir = Path(tempfile.mkdtemp(prefix="openclaw_git_"))
+            exe_path = tmp_dir / filename
+
+            self.log.info(f"Downloading: {url}")
+            self._download_with_progress(url, exe_path)
+
+            # PortableGit self-extracts with -o flag
+            self.log.step("Extracting Git…")
+            git_dir.mkdir(parents=True, exist_ok=True)
+            r = subprocess.run(
+                [str(exe_path), "-o" + str(git_dir), "-y"],
+                capture_output=True, text=True, timeout=120,
+            )
+
+            shutil.rmtree(tmp_dir, ignore_errors=True)
+
+            git_exe = git_dir / "bin" / "git.exe"
+            if not git_exe.exists():
+                # Some versions use cmd/git.exe
+                git_exe = git_dir / "cmd" / "git.exe"
+
+            if git_exe.exists():
+                # Add to current process PATH
+                git_bin = str(git_exe.parent)
+                os.environ["PATH"] = git_bin + os.pathsep + os.environ.get("PATH", "")
+                # Add to system PATH permanently
+                self._add_to_system_path(git_bin)
+                self.log.success(f"Git installed to {git_dir}")
+                return True
+
+            self.log.error("Git extraction failed — git.exe not found")
+            return False
+        except Exception as e:
+            self.log.error(f"Git install failed: {e}")
+            return False
+
+    def _resolve_git_version(self) -> str | None:
+        """Resolve latest Git for Windows version from npmmirror."""
+        import json
+        try:
+            url = "https://api.github.com/repos/git-for-windows/git/releases/latest"
+            req = urllib.request.Request(url, headers={"User-Agent": "OpenClawDeployer/1.0"})
+            with urllib.request.urlopen(req, timeout=15) as resp:
+                data = json.loads(resp.read())
+            tag = data.get("tag_name", "")  # e.g. "v2.47.1.windows.1"
+            ver = tag.lstrip("v").split(".windows")[0]  # "2.47.1"
+            return ver
+        except Exception:
+            pass
+        # Fallback: hardcoded recent version
+        return "2.47.1"
+
+    def _add_to_system_path(self, directory: str):
+        """Add a directory to system PATH via registry (persistent)."""
+        try:
+            import winreg
+            key = winreg.OpenKey(
+                winreg.HKEY_LOCAL_MACHINE,
+                r"SYSTEM\CurrentControlSet\Control\Session Manager\Environment",
+                0, winreg.KEY_ALL_ACCESS,
+            )
+            current, _ = winreg.QueryValueEx(key, "Path")
+            if directory.lower() not in current.lower():
+                new_path = current.rstrip(";") + ";" + directory
+                winreg.SetValueEx(key, "Path", 0, winreg.REG_EXPAND_SZ, new_path)
+                self.log.info(f"  Added to system PATH: {directory}")
+            winreg.CloseKey(key)
+        except Exception as e:
+            self.log.warn(f"  Could not update system PATH: {e}")
 
     # ────────────────────── Node.js ──────────────────────
 
@@ -275,7 +369,7 @@ class WindowsSetup:
 
             r = subprocess.run(
                 [npm, "install", "-g", f"openclaw@{tag}",
-                 "--verbose", "--prefer-offline"],
+                 "--loglevel", "warn"],
                 capture_output=True, text=True, encoding="utf-8", errors="replace",
                 timeout=600, env=env,
             )
@@ -284,10 +378,12 @@ class WindowsSetup:
                 return True
             # npm warnings (EBADENGINE etc.) may still succeed
             if "added" in r.stderr.lower() or "openclaw" in r.stdout.lower():
-                self.log.warn(f"npm warnings: {r.stderr.strip()[:300]}")
+                self.log.warn(f"npm warnings: {r.stderr.strip()[-300:]}")
                 self.log.success("OpenClaw installed on Windows (with warnings)")
                 return True
-            self.log.error(f"npm install failed: {r.stderr.strip()[:500]}")
+            # Log the TAIL of stderr (actual error is at the end, not the beginning)
+            err_out = r.stderr.strip()
+            self.log.error(f"npm install failed (exit {r.returncode}):\n{err_out[-1000:]}")
             return False
         except Exception as e:
             self.log.error(f"OpenClaw install failed: {e}")

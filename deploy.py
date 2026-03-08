@@ -69,6 +69,7 @@ STEPS = [
 ]
 
 WIN_STEPS = [
+    ("win_git",           "Install Git"),
     ("win_node_check",    "Check Node.js (Windows)"),
     ("win_node_install",  "Download Node.js (npmmirror)"),
     ("win_npm_mirror",    "Set npm Registry (npmmirror)"),
@@ -886,6 +887,9 @@ class DeployerApp(tk.Tk):
                 log.error(f"Step [{sid}] exception: {exc}")
                 self._set_win_step(sid, FAILED, str(exc)[:30])
                 return False
+
+        # 0. Ensure git is available
+        _exec("win_git", ws.ensure_git)
 
         # 1. Check Node
         has_node = _exec("win_node_check", ws.check_node_windows)
