@@ -20,7 +20,24 @@ git clone https://github.com/SeanWeiSean/ClawDeployInChina.git
 cd ClawDeployInChina
 ```
 
-### 2. 配置模型 API Key
+### 2. 创建虚拟环境并安装依赖
+
+```bash
+python -m venv .venv
+
+# Windows
+.venv\Scripts\activate
+
+# macOS / Linux
+source .venv/bin/activate
+
+# 安装可选依赖（推荐）
+pip install -r requirements.txt
+```
+
+> 项目核心功能无需额外依赖（tkinter 随 Python 自带，YAML 有内置 fallback），但建议安装 `pyyaml` 以获得完整的 YAML 支持。
+
+### 3. 配置模型 API Key
 
 复制 `.env.example` 为 `.env`，填入你自己的模型端点和密钥：
 
@@ -37,7 +54,7 @@ MODEL_API_KEY=sk-your-api-key-here
 
 > **⚠️ `.env` 文件包含敏感信息，已被 `.gitignore` 排除，不会被提交到仓库。**
 
-### 3. 启动部署器
+### 4. 启动部署器
 
 双击 `launch.bat`，或手动运行：
 

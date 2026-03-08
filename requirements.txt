@@ -1,4 +1,4 @@
-# No external dependencies required.
+# No external dependencies strictly required.
 # The GUI uses tkinter (bundled with Python 3).
-# YAML support uses a built-in fallback; install pyyaml for full YAML:
-# pyyaml>=6.0
+# pyyaml is optional but recommended for full YAML support.
+pyyaml>=6.0
