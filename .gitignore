@@ -1,0 +1,46 @@
+# ═══════════════════════════════════════════════════════════
+#  OpenClaw Deployer — .gitignore
+# ═══════════════════════════════════════════════════════════
+
+# Secrets / environment
+.env
+litellm_auth_and_url.txt
+
+# Runtime config (may contain user secrets)
+config.yaml
+
+# Python
+__pycache__/
+*.py[cod]
+*$py.class
+*.egg-info/
+dist/
+*.egg
+
+# Virtual environments
+.venv/
+venv/
+ENV/
+
+# PyInstaller build artifacts
+build/
+dist/
+*.spec
+
+# Bundled installers / large binaries
+Dependency/
+
+# Logs
+logs/
+
+# IDE / editor
+.vscode/
+.idea/
+*.swp
+*.swo
+*~
+
+# OS
+Thumbs.db
+Desktop.ini
+.DS_Store
