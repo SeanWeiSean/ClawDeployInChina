@@ -6,10 +6,13 @@
 
 ## 功能
 
+- **自动安装 Git**：从 npmmirror 镜像下载 PortableGit，无需手动安装
 - **WSL2 模式**：自动安装 Ubuntu 24.04 → Node.js → pnpm → OpenClaw，配置 systemd
 - **Windows 原生模式**：从 npmmirror 下载 Node.js，直接在 Windows 上安装 OpenClaw
 - 自动写入 LiteLLM 模型配置并启动 Gateway 服务
+- npm registry 自动切换淘宝源，国内下载不卡
 - 图形化部署界面，适合非技术人员使用
+- 可打包为单文件 exe，双击即用
 
 ## 快速开始
 
@@ -63,6 +66,22 @@ python deploy.py
 ```
 
 程序会请求管理员权限（WSL 安装需要），确认 UAC 弹窗后即可看到部署界面。
+
+### 使用 exe（无需 Python 环境）
+
+也可直接使用打包好的 `OpenClawDeployer.exe`，双击运行即可，无需安装 Python。
+
+> 注意：exe 旁边需要有 `.env` 文件，填入你的 API Key。
+
+## 部署器自动安装的依赖
+
+部署器会自动在目标机器上安装以下软件，无需用户手动操作：
+
+| 软件 | 来源 | 安装位置 |
+|---|---|---|
+| Git | npmmirror 镜像（PortableGit） | `~/.openclaw-git/` |
+| Node.js 22 | npmmirror 镜像 | `~/.openclaw-node/` |
+| OpenClaw | npm（淘宝源） | npm global |
 
 ## 项目结构
 
