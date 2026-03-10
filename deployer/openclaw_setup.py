@@ -1,9 +1,36 @@
 """OpenClaw installation & configuration inside WSL."""
 
 import json
+import re
 import textwrap
 from deployer.logger import DeployerLogger
 from deployer.wsl_manager import WSLManager
+
+# Strict patterns for values interpolated into shell commands
+_VERSION_RE = re.compile(r'^\d+(\.\d+){0,2}$')       # e.g. "22", "22.14", "22.14.0"
+_CHANNEL_RE = re.compile(r'^[a-zA-Z][a-zA-Z0-9-]{0,30}$')  # e.g. "stable", "beta", "dev"
+_NPM_TAG_RE = re.compile(r'^[a-zA-Z0-9][a-zA-Z0-9._-]{0,60}$')  # e.g. "latest", "openclaw@1.2.3"
+
+
+def _validate_version(val: str) -> str:
+    """Validate a version string before shell interpolation."""
+    if not _VERSION_RE.match(val):
+        raise ValueError(f"Invalid version string: {val!r}")
+    return val
+
+
+def _validate_channel(val: str) -> str:
+    """Validate a channel/tag name before shell interpolation."""
+    if not _CHANNEL_RE.match(val):
+        raise ValueError(f"Invalid channel name: {val!r}")
+    return val
+
+
+def _validate_npm_tag(val: str) -> str:
+    """Validate an npm tag before shell interpolation."""
+    if not _NPM_TAG_RE.match(val):
+        raise ValueError(f"Invalid npm tag: {val!r}")
+    return val
 
 # Prefix that ensures nvm is available in non-interactive shells.
 _NVM = 'export NVM_DIR="$HOME/.nvm" && [ -s "$NVM_DIR/nvm.sh" ] && . "$NVM_DIR/nvm.sh"'
@@ -39,7 +66,7 @@ class OpenClawSetup:
 
     def install_node(self) -> bool:
         method = self.cfg.get("node.install_method", "nvm")
-        version = self.cfg.get("node.version", "22")
+        version = _validate_version(self.cfg.get("node.version", "22"))
 
         if method == "nvm":
             return self._install_node_nvm(version)
@@ -142,14 +169,14 @@ class OpenClawSetup:
 
     def install_openclaw(self) -> bool:
         method = self.cfg.get("openclaw.install_method", "npm")
-        channel = self.cfg.get("openclaw.channel", "stable")
+        channel = _validate_channel(self.cfg.get("openclaw.channel", "stable"))
 
         if method == "npm":
             return self._install_openclaw_npm(channel)
         return self._install_openclaw_source()
 
     def _install_openclaw_npm(self, channel: str) -> bool:
-        tag = "latest" if channel == "stable" else channel
+        tag = _validate_npm_tag("latest" if channel == "stable" else channel)
         self.log.step(f"Installing OpenClaw via npm (tag={tag})…")
         ok, out = self._run(f"npm install -g openclaw@{tag}", timeout=300)
         if ok:

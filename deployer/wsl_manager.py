@@ -159,9 +159,21 @@ class WSLManager:
             return False
 
     def enable_systemd(self) -> bool:
-        """Write /etc/wsl.conf with systemd=true."""
-        self.log.step("Enabling systemd in WSL…")
-        conf_content = "[boot]\\nsystemd=true"
+        """Write /etc/wsl.conf with systemd=true and security hardening."""
+        self.log.step("Enabling systemd + security hardening in WSL…")
+        # Hardened wsl.conf: systemd + restrict Windows interop
+        conf_lines = [
+            "[boot]",
+            "systemd=true",
+            "",
+            "[automount]",
+            "enabled=true",
+            'options="metadata,umask=077"',
+            "",
+            "[interop]",
+            "appendWindowsPath=false",
+        ]
+        conf_content = "\\n".join(conf_lines)
         try:
             # Check if already configured
             if self.is_systemd_enabled():
@@ -179,7 +191,7 @@ class WSLManager:
             if r.returncode != 0:
                 self.log.error(f"Enable systemd error: {r.stderr_text.strip()}")
                 return False
-            self.log.success("systemd enabled in /etc/wsl.conf")
+            self.log.success("systemd enabled + WSL security hardening applied")
             return True
         except Exception as e:
             self.log.error(f"Failed to enable systemd: {e}")

@@ -4,8 +4,10 @@ Downloads Node.js from npmmirror (Chinese mirror), installs it,
 configures npm to use the taobao registry, and installs openclaw.
 """
 
+import hashlib
 import os
 import platform
+import re
 import shutil
 import subprocess
 import tempfile
@@ -26,6 +28,9 @@ DEFAULT_NODE_DIR = Path(os.environ.get(
     "OPENCLAW_NODE_DIR",
     str(Path.home() / ".openclaw-node"),
 ))
+
+# Strict pattern for version strings interpolated into URLs/commands
+_VERSION_RE = re.compile(r'^\d+(\.\d+){0,2}$')
 
 
 class WindowsSetup:
@@ -218,6 +223,9 @@ class WindowsSetup:
         self.log.step("Installing Node.js on Windows (npmmirror)…")
 
         version = self._resolve_latest_version(self.node_version)
+        if not _VERSION_RE.match(version):
+            self.log.error(f"Invalid resolved version: {version!r}")
+            return False
         self.log.info(f"Resolved version: v{version}")
 
         url = self._get_node_download_url(version)
@@ -229,6 +237,12 @@ class WindowsSetup:
             zip_path = tmp_dir / "node.zip"
 
             self._download_with_progress(url, zip_path)
+
+            # Verify SHA256 integrity against official SHASUMS256.txt
+            if not self._verify_node_sha256(version, zip_path):
+                self.log.error("SHA256 verification FAILED — download may be tampered")
+                shutil.rmtree(tmp_dir, ignore_errors=True)
+                return False
 
             # Extract
             self.log.step("Extracting Node.js…")
@@ -304,6 +318,50 @@ class WindowsSetup:
 
         self.log.info(f"  Download complete: {downloaded // (1024*1024):.0f} MB")
 
+    def _verify_node_sha256(self, version: str, zip_path: Path) -> bool:
+        """Verify downloaded Node.js zip against official SHASUMS256.txt."""
+        import json
+        arch = self._get_arch()
+        filename = f"node-v{version}-win-{arch}.zip"
+
+        # Compute local hash
+        sha = hashlib.sha256()
+        with open(zip_path, "rb") as f:
+            for chunk in iter(lambda: f.read(256 * 1024), b""):
+                sha.update(chunk)
+        local_hash = sha.hexdigest()
+
+        # Fetch official SHASUMS256.txt (try nodejs.org first, then npmmirror)
+        shasums_urls = [
+            f"https://nodejs.org/dist/v{version}/SHASUMS256.txt",
+            f"{NODE_DOWNLOAD_BASE}/v{version}/SHASUMS256.txt",
+        ]
+        for url in shasums_urls:
+            try:
+                req = urllib.request.Request(url, headers={"User-Agent": "OpenClawDeployer/1.0"})
+                with urllib.request.urlopen(req, timeout=15) as resp:
+                    shasums = resp.read().decode("utf-8")
+                for line in shasums.splitlines():
+                    parts = line.strip().split()
+                    if len(parts) >= 2 and parts[1].strip() == filename:
+                        expected = parts[0].strip()
+                        if local_hash == expected:
+                            self.log.success(f"SHA256 verified: {local_hash[:16]}…")
+                            return True
+                        else:
+                            self.log.error(
+                                f"SHA256 mismatch!\n"
+                                f"  Expected: {expected}\n"
+                                f"  Got:      {local_hash}")
+                            return False
+                self.log.warn(f"Filename {filename} not found in SHASUMS256 from {url}")
+            except Exception as e:
+                self.log.debug(f"SHASUMS256 fetch from {url} failed: {e}")
+                continue
+
+        self.log.warn("Could not fetch SHASUMS256.txt — skipping integrity check")
+        return True  # Fail-open: don't block install if verification servers are down
+
     # ────────────────────── npm config ──────────────────────
 
     def setup_npm_mirror(self) -> bool:
@@ -350,10 +408,69 @@ class WindowsSetup:
             pass
         return False
 
+    def ensure_execution_policy(self) -> bool:
+        """Set PowerShell ExecutionPolicy to RemoteSigned for current user.
+
+        Without this, npm.ps1 / npx.ps1 scripts cannot execute on fresh
+        Windows installs where the default policy is Restricted.
+        """
+        self.log.step("Checking PowerShell execution policy…")
+        try:
+            r = subprocess.run(
+                ["powershell", "-NoProfile", "-Command",
+                 "Get-ExecutionPolicy -Scope CurrentUser"],
+                capture_output=True, text=True, timeout=10,
+            )
+            policy = r.stdout.strip()
+            if policy in ("RemoteSigned", "Unrestricted", "Bypass"):
+                self.log.info(f"ExecutionPolicy already OK: {policy}")
+                return True
+        except Exception:
+            pass
+
+        try:
+            subprocess.run(
+                ["powershell", "-NoProfile", "-Command",
+                 "Set-ExecutionPolicy -Scope CurrentUser -ExecutionPolicy RemoteSigned -Force"],
+                capture_output=True, text=True, timeout=10,
+            )
+            self.log.success("ExecutionPolicy set to RemoteSigned")
+            return True
+        except Exception as e:
+            self.log.warn(f"Could not set ExecutionPolicy: {e}")
+            return False
+
+    def _configure_git_https(self):
+        """Rewrite git SSH URLs to HTTPS to avoid SSH key issues.
+
+        Many npm packages reference git dependencies via ssh://git@github.com/
+        which fails on machines without GitHub SSH keys (common in China).
+        """
+        git = shutil.which("git")
+        if not git:
+            return
+        for pattern in [
+            "ssh://git@github.com/",
+            "git@github.com:",
+        ]:
+            try:
+                subprocess.run(
+                    [git, "config", "--global",
+                     f"url.https://github.com/.insteadOf", pattern],
+                    capture_output=True, text=True, timeout=10,
+                )
+            except Exception:
+                pass
+        self.log.info("Configured git to use HTTPS instead of SSH for GitHub")
+
     def install_openclaw_windows(self) -> bool:
         """Install openclaw via npm on Windows."""
         channel = self.cfg.get("openclaw.channel", "stable")
         tag = "latest" if channel == "stable" else channel
+        # Validate tag before passing to subprocess
+        if not re.match(r'^[a-zA-Z0-9][a-zA-Z0-9._-]{0,60}$', tag):
+            self.log.error(f"Invalid npm tag: {tag!r}")
+            return False
         self.log.step(f"Installing OpenClaw on Windows (npm, tag={tag})…")
 
         npm = self._get_npm_path()
@@ -594,14 +711,15 @@ class WindowsSetup:
             )
             self.log.success(f"Gateway starting on port {port}…")
 
-            if self._gateway_token:
-                dashboard_url = f"http://127.0.0.1:{port}/?token={self._gateway_token}"
-            else:
-                dashboard_url = f"http://127.0.0.1:{port}/"
+            # Open dashboard WITHOUT token in URL to avoid leaking it
+            # via browser history, Referer headers, and browser extensions.
+            dashboard_url = f"http://127.0.0.1:{port}/"
             self._dashboard_url = dashboard_url
 
             self.log.info("")
             self.log.info(f"  ★ Dashboard: {dashboard_url}")
+            if self._gateway_token:
+                self.log.info(f"  ★ Auth token: (saved in openclaw.json — enter it on the dashboard login page)")
             self.log.info("")
 
             # Auto-open dashboard in browser
@@ -614,23 +732,27 @@ class WindowsSetup:
             return False
 
     def _find_openclaw_cmd(self) -> list[str] | None:
-        """Find openclaw executable on Windows."""
+        """Find openclaw executable on Windows.
+
+        Prefer .cmd over bare name to avoid .ps1 execution-policy issues.
+        """
         # Managed node dir
         if self._node_bin:
-            for name in ("openclaw.cmd", "openclaw"):
+            for name in ("openclaw.cmd", "openclaw.exe", "openclaw"):
                 p = self._node_bin / name
                 if p.exists():
                     return [str(p)]
         # npm global
         npm_prefix = Path.home() / "AppData" / "Roaming" / "npm"
-        for name in ("openclaw.cmd", "openclaw"):
+        for name in ("openclaw.cmd", "openclaw.exe", "openclaw"):
             p = npm_prefix / name
             if p.exists():
                 return [str(p)]
-        # System PATH
-        found = shutil.which("openclaw")
-        if found:
-            return [found]
+        # System PATH — prefer .cmd to avoid .ps1
+        for ext in (".cmd", ".exe", ""):
+            found = shutil.which(f"openclaw{ext}")
+            if found:
+                return [found]
         return None
 
     # ────────────────────── helpers ──────────────────────
@@ -643,7 +765,7 @@ class WindowsSetup:
         return env
 
     def _get_npm_path(self) -> str | None:
-        """Find npm executable."""
+        """Find npm executable (prefer .cmd to avoid PS1 execution policy issues)."""
         if self._node_bin:
             npm = self._node_bin / "npm.cmd"
             if npm.exists():
@@ -651,6 +773,11 @@ class WindowsSetup:
             npm = self._node_bin / "npm"
             if npm.exists():
                 return str(npm)
+        # Prefer .cmd over .ps1 — .ps1 fails when ExecutionPolicy is Restricted
+        for ext in (".cmd", ".exe", ""):
+            found = shutil.which(f"npm{ext}")
+            if found:
+                return found
         return shutil.which("npm")
 
     def _get_node_version(self, node_path: str) -> str | None:

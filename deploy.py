@@ -888,8 +888,17 @@ class DeployerApp(tk.Tk):
                 self._set_win_step(sid, FAILED, str(exc)[:30])
                 return False
 
-        # 0. Ensure git is available
+        # 0a. Fix PowerShell execution policy (npm.ps1 blocked on fresh installs)
+        ws.ensure_execution_policy()
+
+        # 0b. Ensure git is available
         _exec("win_git", ws.ensure_git)
+
+        # 0c. Rewrite git SSH→HTTPS (best-effort, don't fail the step)
+        try:
+            ws._configure_git_https()
+        except Exception as exc:
+            log.warn(f"git SSH→HTTPS config failed (non-fatal): {exc}")
 
         # 1. Check Node
         has_node = _exec("win_node_check", ws.check_node_windows)
@@ -906,8 +915,17 @@ class DeployerApp(tk.Tk):
         _exec("win_npm_mirror", ws.setup_npm_mirror)
 
         # 4. Install OpenClaw
-        _exec("win_openclaw", ws.install_openclaw_windows,
-              skip_check=ws.check_openclaw_windows)
+        openclaw_ok = _exec("win_openclaw", ws.install_openclaw_windows,
+                            skip_check=ws.check_openclaw_windows)
+
+        if not openclaw_ok:
+            log.error("OpenClaw installation failed — cannot continue")
+            for sid in ("win_path", "win_config", "win_onboard", "win_gateway", "win_verify"):
+                self._set_win_step(sid, SKIPPED, "Blocked")
+            self._win_running = False
+            self.after(0, lambda: self._win_deploy_btn.config(state="normal"))
+            self.after(0, lambda: self._win_stop_btn.config(state="disabled"))
+            return
 
         # 5. Add to PATH
         _exec("win_path", ws.add_to_path)
