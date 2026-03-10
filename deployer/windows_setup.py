@@ -139,22 +139,22 @@ class WindowsSetup:
         return "2.53.0"
 
     def _add_to_system_path(self, directory: str):
-        """Add a directory to user PATH via registry (persistent, no admin needed)."""
+        """Add a directory to system PATH via registry (persistent)."""
         try:
             import winreg
             key = winreg.OpenKey(
-                winreg.HKEY_CURRENT_USER,
-                r"Environment",
-                0, winreg.KEY_READ | winreg.KEY_WRITE,
+                winreg.HKEY_LOCAL_MACHINE,
+                r"SYSTEM\CurrentControlSet\Control\Session Manager\Environment",
+                0, winreg.KEY_ALL_ACCESS,
             )
             current, _ = winreg.QueryValueEx(key, "Path")
             if directory.lower() not in current.lower():
                 new_path = current.rstrip(";") + ";" + directory
                 winreg.SetValueEx(key, "Path", 0, winreg.REG_EXPAND_SZ, new_path)
-                self.log.info(f"  Added to user PATH: {directory}")
+                self.log.info(f"  Added to system PATH: {directory}")
             winreg.CloseKey(key)
         except Exception as e:
-            self.log.warn(f"  Could not update user PATH: {e}")
+            self.log.warn(f"  Could not update system PATH: {e}")
 
     # ────────────────────── Node.js ──────────────────────
 
@@ -387,7 +387,7 @@ class WindowsSetup:
     # ────────────────────── npm config ──────────────────────
 
     def setup_npm_mirror(self) -> bool:
-        """Set npm registry to the user-selected mirror and fix global prefix."""
+        """Set npm registry and global prefix."""
         registry = self.cfg.get("npm.registry", NPM_REGISTRY)
         self.log.step(f"Configuring npm registry ({registry})…")
         npm = self._get_npm_path()
@@ -399,11 +399,13 @@ class WindowsSetup:
 
             # Ensure npm global prefix points to our managed dir
             # so `npm install -g` puts openclaw.cmd there
-            subprocess.run(
-                [npm, "config", "set", "prefix", str(self.node_dir)],
-                capture_output=True, text=True, encoding="utf-8", errors="replace",
-                timeout=10, env=env,
-            )
+            try:
+                subprocess.run(
+                    [npm, "config", "set", "prefix", str(self.node_dir)],
+                    capture_output=True, timeout=30, env=env,
+                )
+            except Exception:
+                pass
 
             r = subprocess.run(
                 [npm, "config", "set", "registry", registry],
@@ -434,7 +436,10 @@ class WindowsSetup:
     # ────────────────────── OpenClaw ──────────────────────
 
     def check_openclaw_windows(self) -> bool:
-        """Check if openclaw is installed on Windows."""
+        """Check if openclaw is installed on Windows and the binary exists."""
+        # Must have the actual cmd/exe file, not just npm metadata
+        if not self._find_openclaw_cmd():
+            return False
         npm = self._get_npm_path()
         if not npm:
             return False
@@ -529,32 +534,23 @@ class WindowsSetup:
             env["NODE_LLAMA_CPP_SKIP_DOWNLOAD"] = "true"
             self.log.info("Set NODE_LLAMA_CPP_SKIP_DOWNLOAD=true")
 
-            proc = subprocess.Popen(
+            r = subprocess.run(
                 [npm, "install", "-g", f"openclaw@{tag}",
                  "--loglevel", "warn"],
-                stdout=subprocess.PIPE, stderr=subprocess.STDOUT,
-                text=True, encoding="utf-8", errors="replace",
-                env=env,
+                capture_output=True, text=True, encoding="utf-8", errors="replace",
+                timeout=900, env=env,
             )
-            # Stream npm output line-by-line so progress is visible in logs
-            collected: list[str] = []
-            for line in proc.stdout:
-                stripped = line.rstrip()
-                if stripped:
-                    collected.append(stripped)
-                    self.log.info(f"  npm: {stripped}")
-            proc.wait(timeout=900)
-
-            if proc.returncode == 0:
+            if r.returncode == 0:
                 self.log.success("OpenClaw installed on Windows")
                 return True
             # npm warnings (EBADENGINE etc.) may still succeed
-            all_out = "\n".join(collected)
-            if "added" in all_out.lower():
-                self.log.warn(f"npm warnings (exit {proc.returncode})")
+            if "added" in r.stderr.lower() or "openclaw" in r.stdout.lower():
+                self.log.warn(f"npm warnings: {r.stderr.strip()[-300:]}")
                 self.log.success("OpenClaw installed on Windows (with warnings)")
                 return True
-            self.log.error(f"npm install failed (exit {proc.returncode}):\n{all_out[-1000:]}")
+            # Log the TAIL of stderr (actual error is at the end, not the beginning)
+            err_out = r.stderr.strip()
+            self.log.error(f"npm install failed (exit {r.returncode}):\n{err_out[-1000:]}")
             return False
         except Exception as e:
             self.log.error(f"OpenClaw install failed: {e}")
@@ -882,7 +878,10 @@ class WindowsSetup:
         """Return env dict with our managed node + git in PATH."""
         env = os.environ.copy()
         path_prefix = ""
-        if self._node_bin:
+        # Always put managed node dir first so our node.exe wins over system node
+        if self.node_dir.exists():
+            path_prefix += str(self.node_dir) + os.pathsep
+        if self._node_bin and str(self._node_bin) != str(self.node_dir):
             path_prefix += str(self._node_bin) + os.pathsep
         if self._git_bin:
             path_prefix += self._git_bin + os.pathsep
