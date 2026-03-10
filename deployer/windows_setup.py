@@ -387,7 +387,7 @@ class WindowsSetup:
     # ────────────────────── npm config ──────────────────────
 
     def setup_npm_mirror(self) -> bool:
-        """Set npm registry to the user-selected mirror."""
+        """Set npm registry to the user-selected mirror and fix global prefix."""
         registry = self.cfg.get("npm.registry", NPM_REGISTRY)
         self.log.step(f"Configuring npm registry ({registry})…")
         npm = self._get_npm_path()
@@ -396,6 +396,15 @@ class WindowsSetup:
             return False
         try:
             env = self._get_env()
+
+            # Ensure npm global prefix points to our managed dir
+            # so `npm install -g` puts openclaw.cmd there
+            subprocess.run(
+                [npm, "config", "set", "prefix", str(self.node_dir)],
+                capture_output=True, text=True, encoding="utf-8", errors="replace",
+                timeout=10, env=env,
+            )
+
             r = subprocess.run(
                 [npm, "config", "set", "registry", registry],
                 capture_output=True, text=True, encoding="utf-8", errors="replace",
@@ -848,10 +857,10 @@ class WindowsSetup:
 
         Prefer .cmd over bare name to avoid .ps1 execution-policy issues.
         """
-        # Managed node dir
-        if self._node_bin:
+        # Managed node dir (always check, even if _node_bin not set)
+        for search_dir in filter(None, [self._node_bin, self.node_dir]):
             for name in ("openclaw.cmd", "openclaw.exe", "openclaw"):
-                p = self._node_bin / name
+                p = search_dir / name
                 if p.exists():
                     return [str(p)]
         # npm global
