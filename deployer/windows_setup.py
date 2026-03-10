@@ -699,7 +699,7 @@ class WindowsSetup:
             r = subprocess.run(
                 cmd + ["daemon", "install"],
                 capture_output=True, text=True, encoding="utf-8", errors="replace",
-                timeout=30, env=env,
+                timeout=120, env=env,
             )
             out = (r.stdout + r.stderr).strip()
             if out:
