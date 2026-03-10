@@ -9,8 +9,10 @@ import os
 import platform
 import re
 import shutil
+import socket
 import subprocess
 import tempfile
+import time
 import urllib.request
 import zipfile
 from pathlib import Path
@@ -42,12 +44,15 @@ class WindowsSetup:
         self.node_version = config.get("node.version", "22")
         self.node_dir = DEFAULT_NODE_DIR
         self._node_bin: Path | None = None
+        self._git_bin: str | None = None  # path to git bin directory
 
     # ────────────────────── Git ──────────────────────
 
     def ensure_git(self) -> bool:
         """Install Git if not already available."""
-        if shutil.which("git"):
+        git_path = shutil.which("git")
+        if git_path:
+            self._git_bin = str(Path(git_path).parent)
             self.log.info("git already in PATH")
             return True
 
@@ -59,26 +64,40 @@ class WindowsSetup:
             self.log.error("Could not resolve Git version")
             return False
 
-        # Download portable Git (no installer needed, just extract)
-        bit = "64" if arch == "x64" else "32"
-        filename = f"PortableGit-{git_version}-{bit}-bit.7z.exe"
+        # Git for Windows release naming (verified against actual releases):
+        #   x64:   PortableGit-{ver}-64-bit.7z.exe   (self-extracting)
+        #   arm64: PortableGit-{ver}-arm64.7z.exe     (self-extracting)
+        #   x86:   MinGit-{ver}-32-bit.zip            (zip — no 32-bit PortableGit since ~v2.50)
+        use_mingit_zip = (arch == "x86")
+        if arch == "arm64":
+            filename = f"PortableGit-{git_version}-arm64.7z.exe"
+        elif arch == "x86":
+            filename = f"MinGit-{git_version}-32-bit.zip"
+        else:
+            filename = f"PortableGit-{git_version}-64-bit.7z.exe"
         url = f"{GIT_MIRROR_BASE}/v{git_version}.windows.1/{filename}"
 
         git_dir = Path.home() / ".openclaw-git"
         try:
             tmp_dir = Path(tempfile.mkdtemp(prefix="openclaw_git_"))
-            exe_path = tmp_dir / filename
+            dl_path = tmp_dir / filename
 
             self.log.info(f"Downloading: {url}")
-            self._download_with_progress(url, exe_path)
+            self._download_with_progress(url, dl_path)
 
-            # PortableGit self-extracts with -o flag
             self.log.step("Extracting Git…")
             git_dir.mkdir(parents=True, exist_ok=True)
-            r = subprocess.run(
-                [str(exe_path), "-o" + str(git_dir), "-y"],
-                capture_output=True, text=True, timeout=120,
-            )
+
+            if use_mingit_zip:
+                # MinGit is a plain zip — extract directly
+                with zipfile.ZipFile(dl_path, "r") as zf:
+                    zf.extractall(git_dir)
+            else:
+                # PortableGit self-extracts with -o flag
+                subprocess.run(
+                    [str(dl_path), "-o" + str(git_dir), "-y"],
+                    capture_output=True, text=True, timeout=120,
+                )
 
             shutil.rmtree(tmp_dir, ignore_errors=True)
 
@@ -90,6 +109,7 @@ class WindowsSetup:
             if git_exe.exists():
                 # Add to current process PATH
                 git_bin = str(git_exe.parent)
+                self._git_bin = git_bin
                 os.environ["PATH"] = git_bin + os.pathsep + os.environ.get("PATH", "")
                 # Add to system PATH permanently
                 self._add_to_system_path(git_bin)
@@ -116,35 +136,37 @@ class WindowsSetup:
         except Exception:
             pass
         # Fallback: hardcoded recent version
-        return "2.47.1"
+        return "2.53.0"
 
     def _add_to_system_path(self, directory: str):
-        """Add a directory to system PATH via registry (persistent)."""
+        """Add a directory to user PATH via registry (persistent, no admin needed)."""
         try:
             import winreg
             key = winreg.OpenKey(
-                winreg.HKEY_LOCAL_MACHINE,
-                r"SYSTEM\CurrentControlSet\Control\Session Manager\Environment",
-                0, winreg.KEY_ALL_ACCESS,
+                winreg.HKEY_CURRENT_USER,
+                r"Environment",
+                0, winreg.KEY_READ | winreg.KEY_WRITE,
             )
             current, _ = winreg.QueryValueEx(key, "Path")
             if directory.lower() not in current.lower():
                 new_path = current.rstrip(";") + ";" + directory
                 winreg.SetValueEx(key, "Path", 0, winreg.REG_EXPAND_SZ, new_path)
-                self.log.info(f"  Added to system PATH: {directory}")
+                self.log.info(f"  Added to user PATH: {directory}")
             winreg.CloseKey(key)
         except Exception as e:
-            self.log.warn(f"  Could not update system PATH: {e}")
+            self.log.warn(f"  Could not update user PATH: {e}")
 
     # ────────────────────── Node.js ──────────────────────
 
     def _get_arch(self) -> str:
-        """Return 'x64' or 'arm64' based on platform."""
+        """Return 'x64', 'x86', or 'arm64' based on platform."""
         machine = platform.machine().lower()
         if machine in ("amd64", "x86_64", "x64"):
             return "x64"
         if machine in ("arm64", "aarch64"):
             return "arm64"
+        if machine in ("x86", "i386", "i686"):
+            return "x86"
         return "x64"
 
     def _get_node_download_url(self, version: str) -> str:
@@ -365,23 +387,37 @@ class WindowsSetup:
     # ────────────────────── npm config ──────────────────────
 
     def setup_npm_mirror(self) -> bool:
-        """Set npm registry to taobao mirror."""
-        self.log.step("Configuring npm registry (taobao mirror)…")
+        """Set npm registry to the user-selected mirror."""
+        registry = self.cfg.get("npm.registry", NPM_REGISTRY)
+        self.log.step(f"Configuring npm registry ({registry})…")
         npm = self._get_npm_path()
         if not npm:
             self.log.error("npm not found")
             return False
         try:
+            env = self._get_env()
             r = subprocess.run(
-                [npm, "config", "set", "registry", NPM_REGISTRY],
+                [npm, "config", "set", "registry", registry],
                 capture_output=True, text=True, encoding="utf-8", errors="replace",
-                timeout=30,
+                timeout=30, env=env,
             )
-            if r.returncode == 0:
-                self.log.success(f"npm registry set to {NPM_REGISTRY}")
-                return True
-            self.log.error(f"npm config set failed: {r.stderr.strip()}")
-            return False
+            if r.returncode != 0:
+                self.log.error(f"npm config set failed: {r.stderr.strip()}")
+                return False
+
+            # Verify
+            r2 = subprocess.run(
+                [npm, "config", "get", "registry"],
+                capture_output=True, text=True, encoding="utf-8", errors="replace",
+                timeout=10, env=env,
+            )
+            actual = r2.stdout.strip().rstrip("/")
+            expected = registry.rstrip("/")
+            if actual == expected:
+                self.log.success(f"npm registry → {actual}  ✓")
+            else:
+                self.log.warn(f"npm registry set to {actual} (expected {expected})")
+            return True
         except Exception as e:
             self.log.error(f"npm config failed: {e}")
             return False
@@ -484,23 +520,32 @@ class WindowsSetup:
             env["NODE_LLAMA_CPP_SKIP_DOWNLOAD"] = "true"
             self.log.info("Set NODE_LLAMA_CPP_SKIP_DOWNLOAD=true")
 
-            r = subprocess.run(
+            proc = subprocess.Popen(
                 [npm, "install", "-g", f"openclaw@{tag}",
                  "--loglevel", "warn"],
-                capture_output=True, text=True, encoding="utf-8", errors="replace",
-                timeout=600, env=env,
+                stdout=subprocess.PIPE, stderr=subprocess.STDOUT,
+                text=True, encoding="utf-8", errors="replace",
+                env=env,
             )
-            if r.returncode == 0:
+            # Stream npm output line-by-line so progress is visible in logs
+            collected: list[str] = []
+            for line in proc.stdout:
+                stripped = line.rstrip()
+                if stripped:
+                    collected.append(stripped)
+                    self.log.info(f"  npm: {stripped}")
+            proc.wait(timeout=900)
+
+            if proc.returncode == 0:
                 self.log.success("OpenClaw installed on Windows")
                 return True
             # npm warnings (EBADENGINE etc.) may still succeed
-            if "added" in r.stderr.lower() or "openclaw" in r.stdout.lower():
-                self.log.warn(f"npm warnings: {r.stderr.strip()[-300:]}")
+            all_out = "\n".join(collected)
+            if "added" in all_out.lower():
+                self.log.warn(f"npm warnings (exit {proc.returncode})")
                 self.log.success("OpenClaw installed on Windows (with warnings)")
                 return True
-            # Log the TAIL of stderr (actual error is at the end, not the beginning)
-            err_out = r.stderr.strip()
-            self.log.error(f"npm install failed (exit {r.returncode}):\n{err_out[-1000:]}")
+            self.log.error(f"npm install failed (exit {proc.returncode}):\n{all_out[-1000:]}")
             return False
         except Exception as e:
             self.log.error(f"OpenClaw install failed: {e}")
@@ -629,7 +674,7 @@ class WindowsSetup:
         return True
 
     def run_onboard(self) -> bool:
-        """Install gateway daemon service (entire process runs as admin)."""
+        """Install gateway service via openclaw daemon install."""
         self.log.step("Installing gateway service…")
         cmd = self._find_openclaw_cmd()
         if not cmd:
@@ -642,43 +687,23 @@ class WindowsSetup:
             env["LITELLM_API_KEY"] = api_key
 
         try:
-            # Install the gateway as a system service
             r = subprocess.run(
-                cmd + ["gateway", "install"],
+                cmd + ["daemon", "install"],
                 capture_output=True, text=True, encoding="utf-8", errors="replace",
                 timeout=30, env=env,
             )
-            output = r.stdout.strip()
-            if output:
-                self.log.info(f"Gateway install: {output[:300]}")
-            stderr = r.stderr.strip()
-            if stderr:
-                self.log.debug(f"Gateway install stderr: {stderr[:200]}")
-
-            if "access is denied" in (stderr + output).lower():
-                self.log.error("Access denied — deployer needs to run as Administrator")
-                return False
-
-            # Run doctor --fix to auto-repair any config issues
-            r2 = subprocess.run(
-                cmd + ["doctor", "--fix"],
-                capture_output=True, text=True, encoding="utf-8", errors="replace",
-                timeout=30, env=env,
-            )
-            if r2.stdout.strip():
-                self.log.debug(f"Doctor: {r2.stdout.strip()[:200]}")
-
+            out = (r.stdout + r.stderr).strip()
+            if out:
+                for line in out.splitlines()[-5:]:
+                    self.log.info(f"  {line}")
             self.log.success("Gateway service installed")
             return True
-        except subprocess.TimeoutExpired:
-            self.log.warn("Onboard timed out (may need interactive setup)")
-            return True  # Config is already written
         except Exception as e:
             self.log.error(f"Onboard failed: {e}")
             return False
 
     def start_gateway(self) -> bool:
-        """Start the OpenClaw gateway and open dashboard in browser."""
+        """Start gateway via openclaw daemon start and open dashboard."""
         self.log.step("Starting OpenClaw gateway…")
         cmd = self._find_openclaw_cmd()
         if not cmd:
@@ -692,7 +717,7 @@ class WindowsSetup:
 
         port = self.cfg.get("gateway.port", 18789)
 
-        # Read token from config BEFORE starting gateway
+        # Read token from config
         import json
         config_path = Path.home() / ".openclaw" / "openclaw.json"
         self._gateway_token = ""
@@ -703,33 +728,120 @@ class WindowsSetup:
             pass
 
         try:
-            # Start gateway in background
-            subprocess.Popen(
-                cmd + ["gateway", "--port", str(port), "--verbose"],
-                env=env,
-                creationflags=subprocess.CREATE_NO_WINDOW if hasattr(subprocess, 'CREATE_NO_WINDOW') else 0x08000000,
+            r = subprocess.run(
+                cmd + ["daemon", "start"],
+                capture_output=True, text=True, encoding="utf-8", errors="replace",
+                timeout=30, env=env,
             )
-            self.log.success(f"Gateway starting on port {port}…")
+            out = (r.stdout + r.stderr).strip()
+            if out:
+                for line in out.splitlines()[-5:]:
+                    self.log.info(f"  {line}")
 
-            # Open dashboard WITHOUT token in URL to avoid leaking it
-            # via browser history, Referer headers, and browser extensions.
             dashboard_url = f"http://127.0.0.1:{port}/"
             self._dashboard_url = dashboard_url
-
-            self.log.info("")
-            self.log.info(f"  ★ Dashboard: {dashboard_url}")
+            open_url = dashboard_url
             if self._gateway_token:
-                self.log.info(f"  ★ Auth token: (saved in openclaw.json — enter it on the dashboard login page)")
-            self.log.info("")
+                open_url = f"{dashboard_url}?token={self._gateway_token}"
 
-            # Auto-open dashboard in browser
-            import webbrowser
-            webbrowser.open(dashboard_url)
+            # Wait for gateway to be reachable
+            self.log.info("  Waiting for gateway to be ready…")
+            ready = False
+            for i in range(15):
+                try:
+                    with socket.create_connection(("127.0.0.1", port), timeout=1):
+                        ready = True
+                        break
+                except (ConnectionRefusedError, OSError):
+                    time.sleep(1)
 
-            return True
+            if ready:
+                self.log.success("Gateway is ready!")
+                self.log.info(f"  ★ Dashboard: {open_url}")
+                import webbrowser
+                webbrowser.open(open_url)
+            else:
+                self.log.warn("Gateway did not become reachable in 15s")
+                self.log.info(f"  Try manually: {open_url}")
+
+            return ready
         except Exception as e:
             self.log.error(f"Gateway start failed: {e}")
             return False
+
+    def create_desktop_shortcut(self) -> bool:
+        """Create a desktop shortcut that opens the OpenClaw dashboard."""
+        self.log.step("Creating desktop shortcut…")
+        port = self.cfg.get("gateway.port", 18789)
+
+        # Read token from config
+        import json
+        config_path = Path.home() / ".openclaw" / "openclaw.json"
+        token = ""
+        try:
+            cfg_data = json.loads(config_path.read_text(encoding="utf-8"))
+            token = cfg_data.get("gateway", {}).get("auth", {}).get("token", "")
+        except Exception:
+            pass
+
+        url = f"http://127.0.0.1:{port}/"
+        if token:
+            url += f"?token={token}"
+
+        desktop = Path.home() / "Desktop"
+        if not desktop.exists():
+            # Some localized Windows use a different Desktop path
+            try:
+                import winreg
+                key = winreg.OpenKey(
+                    winreg.HKEY_CURRENT_USER,
+                    r"Software\Microsoft\Windows\CurrentVersion\Explorer\User Shell Folders",
+                )
+                desktop_val, _ = winreg.QueryValueEx(key, "Desktop")
+                winreg.CloseKey(key)
+                desktop = Path(os.path.expandvars(desktop_val))
+            except Exception:
+                pass
+
+        shortcut_path = desktop / "OpenClaw.url"
+        try:
+            # .url shortcut — simple, no COM dependency, works everywhere
+            shortcut_path.write_text(
+                f"[InternetShortcut]\n"
+                f"URL={url}\n"
+                f"IconIndex=0\n",
+                encoding="utf-8",
+            )
+
+            # Also try to set a custom icon if openclaw.ico exists
+            import sys
+            ico_candidates = [
+                Path.home() / ".openclaw" / "openclaw.ico",
+                Path(__file__).parent.parent / "openclaw.ico",
+            ]
+            if getattr(sys, 'frozen', False):
+                ico_candidates.insert(0, Path(sys._MEIPASS) / "openclaw.ico")
+                ico_candidates.insert(1, Path(sys.executable).parent / "openclaw.ico")
+            for ico in ico_candidates:
+                if ico.exists():
+                    # Copy ico to .openclaw for persistence
+                    target_ico = Path.home() / ".openclaw" / "openclaw.ico"
+                    if not target_ico.exists():
+                        shutil.copy2(ico, target_ico)
+                    shortcut_path.write_text(
+                        f"[InternetShortcut]\n"
+                        f"URL={url}\n"
+                        f"IconFile={target_ico}\n"
+                        f"IconIndex=0\n",
+                        encoding="utf-8",
+                    )
+                    break
+
+            self.log.success(f"Desktop shortcut created: {shortcut_path}")
+            return True
+        except Exception as e:
+            self.log.warn(f"Could not create desktop shortcut: {e}")
+            return True  # Non-fatal
 
     def _find_openclaw_cmd(self) -> list[str] | None:
         """Find openclaw executable on Windows.
@@ -758,10 +870,15 @@ class WindowsSetup:
     # ────────────────────── helpers ──────────────────────
 
     def _get_env(self) -> dict:
-        """Return env dict with our managed node in PATH."""
+        """Return env dict with our managed node + git in PATH."""
         env = os.environ.copy()
+        path_prefix = ""
         if self._node_bin:
-            env["PATH"] = str(self._node_bin) + os.pathsep + env.get("PATH", "")
+            path_prefix += str(self._node_bin) + os.pathsep
+        if self._git_bin:
+            path_prefix += self._git_bin + os.pathsep
+        if path_prefix:
+            env["PATH"] = path_prefix + env.get("PATH", "")
         return env
 
     def _get_npm_path(self) -> str | None:
@@ -843,7 +960,7 @@ class WindowsSetup:
                 winreg.CloseKey(key)
                 return True
 
-            new_path = current_path.rstrip(";") + ";" + ";".join(added)
+            new_path = ";".join(added) + ";" + current_path.rstrip(";")
             winreg.SetValueEx(key, "Path", 0, winreg.REG_EXPAND_SZ, new_path)
             winreg.CloseKey(key)
 
