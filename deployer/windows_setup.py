@@ -20,10 +20,24 @@ from pathlib import Path
 from deployer.logger import DeployerLogger
 
 # ── Mirror URLs ──
-NODE_MIRROR = "https://registry.npmmirror.com/binary.html?path=node/"
-NODE_DOWNLOAD_BASE = "https://registry.npmmirror.com/-/binary/node"
-NPM_REGISTRY = "https://registry.npmmirror.com"
-GIT_MIRROR_BASE = "https://registry.npmmirror.com/-/binary/git-for-windows"
+MIRRORS = {
+    "npmmirror": {
+        "node_download_base": "https://registry.npmmirror.com/-/binary/node",
+        "git_mirror_base": "https://registry.npmmirror.com/-/binary/git-for-windows",
+        "npm_registry": "https://registry.npmmirror.com",
+    },
+    "tencent": {
+        "node_download_base": "https://mirrors.cloud.tencent.com/nodejs-release",
+        "git_mirror_base": "https://registry.npmmirror.com/-/binary/git-for-windows",  # tencent has no Git mirror
+        "npm_registry": "http://mirrors.cloud.tencent.com/npm/",
+    },
+}
+DEFAULT_MIRROR = "npmmirror"
+
+# Legacy constants (kept for reference, use self._mirror_* instead)
+NODE_DOWNLOAD_BASE = MIRRORS["npmmirror"]["node_download_base"]
+NPM_REGISTRY = MIRRORS["npmmirror"]["npm_registry"]
+GIT_MIRROR_BASE = MIRRORS["npmmirror"]["git_mirror_base"]
 
 # Default install location
 DEFAULT_NODE_DIR = Path(os.environ.get(
@@ -46,6 +60,17 @@ class WindowsSetup:
         self._node_bin: Path | None = None
         self._git_bin: str | None = None  # path to git bin directory
 
+        # Select mirror based on npm.registry config
+        registry = config.get("npm.registry", "")
+        if "tencent" in registry.lower():
+            mirror = MIRRORS["tencent"]
+        else:
+            mirror = MIRRORS["npmmirror"]
+        self._node_download_base = mirror["node_download_base"]
+        self._git_mirror_base = mirror["git_mirror_base"]
+        mirror_name = "tencent" if "tencent" in registry.lower() else "npmmirror"
+        self._mirror_name = mirror_name
+
     # ────────────────────── Git ──────────────────────
 
     def ensure_git(self) -> bool:
@@ -56,7 +81,7 @@ class WindowsSetup:
             self.log.info("git already in PATH")
             return True
 
-        self.log.step("Installing Git for Windows (npmmirror)…")
+        self.log.step(f"Installing Git for Windows ({self._mirror_name})…")
         arch = self._get_arch()
         # Resolve latest Git version from npmmirror
         git_version = self._resolve_git_version()
@@ -75,7 +100,7 @@ class WindowsSetup:
             filename = f"MinGit-{git_version}-32-bit.zip"
         else:
             filename = f"PortableGit-{git_version}-64-bit.7z.exe"
-        url = f"{GIT_MIRROR_BASE}/v{git_version}.windows.1/{filename}"
+        url = f"{self._git_mirror_base}/v{git_version}.windows.1/{filename}"
 
         git_dir = Path.home() / ".openclaw-git"
         try:
@@ -174,19 +199,29 @@ class WindowsSetup:
         arch = self._get_arch()
         # npmmirror hosts Node binaries at:
         # https://registry.npmmirror.com/-/binary/node/v22.x.x/node-v22.x.x-win-x64.zip
-        return f"{NODE_DOWNLOAD_BASE}/v{version}/node-v{version}-win-{arch}.zip"
+        return f"{self._node_download_base}/v{version}/node-v{version}-win-{arch}.zip"
 
     def _resolve_latest_version(self, major: str) -> str:
         """Resolve '22' to the latest specific version like '22.14.0'."""
         self.log.debug(f"Resolving latest Node.js {major}.x version…")
         import re
         import json
+        import ssl
 
         # Method 1: Use nodejs.org version index (most reliable)
         try:
             url = "https://nodejs.org/dist/index.json"
             req = urllib.request.Request(url, headers={"User-Agent": "OpenClawDeployer/1.0"})
-            with urllib.request.urlopen(req, timeout=15) as resp:
+            # Try normal SSL first, fall back to unverified if cert fails
+            # (common in China due to corporate proxies / missing CA certs)
+            try:
+                resp = urllib.request.urlopen(req, timeout=15)
+            except urllib.error.URLError:
+                ctx = ssl.create_default_context()
+                ctx.check_hostname = False
+                ctx.verify_mode = ssl.CERT_NONE
+                resp = urllib.request.urlopen(req, timeout=15, context=ctx)
+            with resp:
                 data = json.loads(resp.read())
             for entry in data:
                 ver = entry.get("version", "").lstrip("v")
@@ -198,21 +233,22 @@ class WindowsSetup:
 
         # Method 2: Scrape npmmirror directory listing
         try:
-            url = f"{NODE_DOWNLOAD_BASE}/latest-v{major}.x/"
+            url = f"{self._node_download_base}/latest-v{major}.x/"
             req = urllib.request.Request(url, headers={"User-Agent": "OpenClawDeployer/1.0"})
             with urllib.request.urlopen(req, timeout=15) as resp:
                 html = resp.read().decode("utf-8", errors="replace")
             arch = self._get_arch()
             pattern = rf'node-v({major}\.\d+\.\d+)-win-{arch}\.zip'
-            m = re.search(pattern, html)
-            if m:
-                self.log.debug(f"Resolved from npmmirror: {m.group(1)}")
-                return m.group(1)
+            matches = re.findall(pattern, html)
+            if matches:
+                best = max(matches, key=lambda v: tuple(int(x) for x in v.split(".")))
+                self.log.debug(f"Resolved from npmmirror: {best}")
+                return best
         except Exception as e:
             self.log.debug(f"npmmirror resolve failed: {e}")
 
-        # Fallback
-        fallback = f"{major}.14.0"
+        # Fallback — must satisfy OpenClaw's v22.12+ requirement
+        fallback = f"{major}.20.0"
         self.log.warn(f"Could not resolve version, using fallback: {fallback}")
         return fallback
 
@@ -242,7 +278,7 @@ class WindowsSetup:
 
     def install_node_windows(self) -> bool:
         """Download and install Node.js on Windows from npmmirror."""
-        self.log.step("Installing Node.js on Windows (npmmirror)…")
+        self.log.step(f"Installing Node.js on Windows ({self._mirror_name})…")
 
         version = self._resolve_latest_version(self.node_version)
         if not _VERSION_RE.match(version):
@@ -356,12 +392,20 @@ class WindowsSetup:
         # Fetch official SHASUMS256.txt (try nodejs.org first, then npmmirror)
         shasums_urls = [
             f"https://nodejs.org/dist/v{version}/SHASUMS256.txt",
-            f"{NODE_DOWNLOAD_BASE}/v{version}/SHASUMS256.txt",
+            f"{self._node_download_base}/v{version}/SHASUMS256.txt",
         ]
         for url in shasums_urls:
             try:
+                import ssl
                 req = urllib.request.Request(url, headers={"User-Agent": "OpenClawDeployer/1.0"})
-                with urllib.request.urlopen(req, timeout=15) as resp:
+                try:
+                    resp = urllib.request.urlopen(req, timeout=15)
+                except urllib.error.URLError:
+                    ctx = ssl.create_default_context()
+                    ctx.check_hostname = False
+                    ctx.verify_mode = ssl.CERT_NONE
+                    resp = urllib.request.urlopen(req, timeout=15, context=ctx)
+                with resp:
                     shasums = resp.read().decode("utf-8")
                 for line in shasums.splitlines():
                     parts = line.strip().split()
@@ -703,6 +747,9 @@ class WindowsSetup:
         except Exception:
             pass
 
+        # Remove existing scheduled task to avoid conflicts
+        self._remove_existing_gateway_task(is_admin, env)
+
         if is_admin:
             # Already elevated — run directly
             try:
@@ -758,6 +805,42 @@ class WindowsSetup:
             except Exception as e:
                 self.log.error(f"Elevated gateway install failed: {e}")
                 return False
+
+    def _remove_existing_gateway_task(self, is_admin: bool, env: dict):
+        """Delete existing 'OpenClaw Gateway' scheduled task if present."""
+        check_cmd = (
+            "Get-ScheduledTask -TaskName 'OpenClaw Gateway' -ErrorAction SilentlyContinue"
+        )
+        try:
+            r = subprocess.run(
+                ["powershell", "-Command", check_cmd],
+                capture_output=True, text=True, timeout=15,
+            )
+            if not r.stdout.strip():
+                return  # task does not exist
+        except Exception:
+            return
+
+        self.log.info("  Removing existing 'OpenClaw Gateway' scheduled task…")
+        delete_cmd = "Unregister-ScheduledTask -TaskName 'OpenClaw Gateway' -Confirm:$false"
+        if is_admin:
+            try:
+                subprocess.run(
+                    ["powershell", "-Command", delete_cmd],
+                    capture_output=True, timeout=15,
+                )
+            except Exception:
+                pass
+        else:
+            try:
+                subprocess.run(
+                    ["powershell", "-Command",
+                     f"Start-Process powershell -Verb RunAs -Wait "
+                     f"-ArgumentList '-Command', '{delete_cmd}'"],
+                    capture_output=True, timeout=30,
+                )
+            except Exception:
+                pass
 
     def _fix_gateway_task_background(self):
         """Set the OpenClaw Gateway scheduled task to run in background."""
