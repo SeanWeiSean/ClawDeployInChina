@@ -679,7 +679,11 @@ class WindowsSetup:
         return True
 
     def run_onboard(self) -> bool:
-        """Install gateway service via openclaw daemon install."""
+        """Install gateway service via openclaw daemon install.
+        
+        Uses elevated (admin) subprocess only for this step,
+        so the rest of the install stays in user context.
+        """
         self.log.step("Installing gateway service…")
         cmd = self._find_openclaw_cmd()
         if not cmd:
@@ -691,24 +695,87 @@ class WindowsSetup:
         if api_key:
             env["LITELLM_API_KEY"] = api_key
 
+        # Check if already admin
+        import ctypes
+        is_admin = False
         try:
-            r = subprocess.run(
-                cmd + ["daemon", "install"],
-                capture_output=True, text=True, encoding="utf-8", errors="replace",
-                timeout=120, env=env,
+            is_admin = ctypes.windll.shell32.IsUserAnAdmin() != 0
+        except Exception:
+            pass
+
+        if is_admin:
+            # Already elevated — run directly
+            try:
+                r = subprocess.run(
+                    cmd + ["daemon", "install"],
+                    capture_output=True, text=True, encoding="utf-8", errors="replace",
+                    timeout=120, env=env,
+                )
+                out = (r.stdout + r.stderr).strip()
+                if out:
+                    for line in out.splitlines()[-5:]:
+                        self.log.info(f"  {line}")
+                self.log.success("Gateway service installed")
+                # Fix: set task to run in background (not interactive)
+                self._fix_gateway_task_background()
+                return True
+            except Exception as e:
+                self.log.error(f"Onboard failed: {e}")
+                return False
+        else:
+            # Not admin — write a temp .ps1 script and elevate it
+            try:
+                openclaw_path = cmd[0]
+                tmp_script = Path(tempfile.mktemp(suffix=".ps1", prefix="openclaw_gw_"))
+                lines = [
+                    f'$env:LITELLM_API_KEY = "{api_key}"',
+                    f'& "{openclaw_path}" daemon install',
+                    '',
+                    '# Fix scheduled task to run in background (no cmd window)',
+                    "try {",
+                    "    $task = Get-ScheduledTask -TaskName 'OpenClaw Gateway' -ErrorAction Stop",
+                    "    $task.Principal.LogonType = 'S4U'",
+                    "    $task.Settings.Hidden = $true",
+                    "    Set-ScheduledTask -InputObject $task | Out-Null",
+                    "    Write-Host 'Scheduled task set to background mode'",
+                    "} catch {",
+                    "    Write-Host 'Warning: could not modify task: ' + $_",
+                    "}",
+                    'exit 0',
+                ]
+                tmp_script.write_text("\n".join(lines), encoding="utf-8")
+
+                r = subprocess.run(
+                    ["powershell", "-Command",
+                     f'Start-Process powershell -Verb RunAs -Wait '
+                     f'-ArgumentList \'-ExecutionPolicy\', \'Bypass\', \'-File\', \'"{tmp_script}"\''],
+                    capture_output=True, text=True, encoding="utf-8", errors="replace",
+                    timeout=120,
+                )
+                tmp_script.unlink(missing_ok=True)
+                self.log.success("Gateway service installed (elevated, background mode)")
+                return True
+            except Exception as e:
+                self.log.error(f"Elevated gateway install failed: {e}")
+                return False
+
+    def _fix_gateway_task_background(self):
+        """Set the OpenClaw Gateway scheduled task to run in background."""
+        try:
+            subprocess.run(
+                ["powershell", "-Command",
+                 "$task = Get-ScheduledTask -TaskName 'OpenClaw Gateway' -ErrorAction Stop; "
+                 "$task.Principal.LogonType = 'S4U'; "
+                 "$task.Settings.Hidden = $true; "
+                 "Set-ScheduledTask -InputObject $task | Out-Null"],
+                capture_output=True, timeout=15,
             )
-            out = (r.stdout + r.stderr).strip()
-            if out:
-                for line in out.splitlines()[-5:]:
-                    self.log.info(f"  {line}")
-            self.log.success("Gateway service installed")
-            return True
-        except Exception as e:
-            self.log.error(f"Onboard failed: {e}")
-            return False
+            self.log.info("  Scheduled task set to background mode")
+        except Exception:
+            pass
 
     def start_gateway(self) -> bool:
-        """Start gateway via openclaw daemon start and open dashboard."""
+        """Start gateway as a hidden background process and open dashboard."""
         self.log.step("Starting OpenClaw gateway…")
         cmd = self._find_openclaw_cmd()
         if not cmd:
@@ -733,15 +800,57 @@ class WindowsSetup:
             pass
 
         try:
-            r = subprocess.run(
-                cmd + ["daemon", "start"],
-                capture_output=True, text=True, encoding="utf-8", errors="replace",
-                timeout=30, env=env,
-            )
-            out = (r.stdout + r.stderr).strip()
-            if out:
-                for line in out.splitlines()[-5:]:
-                    self.log.info(f"  {line}")
+            # Kill any existing gateway process first
+            try:
+                subprocess.run(
+                    cmd + ["daemon", "stop"],
+                    capture_output=True, timeout=10, env=env,
+                )
+            except Exception:
+                pass
+
+            # Start gateway via daemon (Scheduled Task) so it runs in the
+            # background without a visible cmd window.  Falling back to
+            # direct Popen with node.exe only if daemon start fails.
+            daemon_ok = False
+            try:
+                r = subprocess.run(
+                    cmd + ["daemon", "start"],
+                    capture_output=True, text=True, encoding="utf-8",
+                    errors="replace", timeout=30, env=env,
+                )
+                if r.returncode == 0:
+                    daemon_ok = True
+                    self.log.info("  Gateway started via daemon (Scheduled Task)")
+            except Exception:
+                pass
+
+            if not daemon_ok:
+                # Fallback: run node.exe directly (not .cmd) to avoid cmd.exe
+                # console window popping up.
+                node_exe = self.node_dir / "node.exe"
+                index_js = self.node_dir / "node_modules" / "openclaw" / "dist" / "index.js"
+                if node_exe.exists() and index_js.exists():
+                    CREATE_NO_WINDOW = 0x08000000
+                    subprocess.Popen(
+                        [str(node_exe), str(index_js), "gateway", "--port", str(port)],
+                        env=env,
+                        creationflags=CREATE_NO_WINDOW,
+                        stdout=subprocess.DEVNULL,
+                        stderr=subprocess.DEVNULL,
+                    )
+                    self.log.info("  Gateway started via node.exe (background, no window)")
+                else:
+                    # Last resort: use openclaw cmd (may flash a window)
+                    CREATE_NO_WINDOW = 0x08000000
+                    subprocess.Popen(
+                        cmd + ["gateway", "--port", str(port)],
+                        env=env,
+                        creationflags=CREATE_NO_WINDOW,
+                        stdout=subprocess.DEVNULL,
+                        stderr=subprocess.DEVNULL,
+                    )
+                    self.log.info("  Gateway started via openclaw.cmd (background)")
 
             dashboard_url = f"http://127.0.0.1:{port}/"
             self._dashboard_url = dashboard_url
