@@ -108,7 +108,7 @@ function createMainWindow(): BrowserWindow {
     height: savedBounds?.height || 800,
     x: savedBounds?.x,
     y: savedBounds?.y,
-    title: "OpenClaw",
+    title: "MicroClaw",
     icon: path.join(__dirname, "../assets/image.png"),
     show: false,
     webPreferences: {

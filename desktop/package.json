@@ -1,7 +1,7 @@
 {
-  "name": "openclaw-desktop",
+  "name": "microclaw",
   "version": "1.0.0",
-  "description": "OpenClaw Desktop - Custom chat UI with built-in gateway",
+  "description": "MicroClaw - Custom chat UI with built-in gateway",
   "private": true,
   "main": "dist/main.js",
   "scripts": {

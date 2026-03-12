@@ -1,6 +1,6 @@
-appId: ai.openclaw.desktop
-productName: OpenClaw
-copyright: Copyright © 2026 OpenClaw
+appId: ai.openclaw.microclaw
+productName: MicroClaw
+copyright: Copyright © 2026 MicroClaw
 
 directories:
   output: release

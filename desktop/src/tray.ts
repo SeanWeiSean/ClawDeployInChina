@@ -11,7 +11,7 @@ export function createTray(callbacks: {
   const icon = nativeImage.createFromPath(iconPath);
 
   tray = new Tray(icon.isEmpty() ? nativeImage.createEmpty() : icon);
-  tray.setToolTip("OpenClaw");
+  tray.setToolTip("MicroClaw");
 
   updateTrayMenu("stopped", callbacks);
 

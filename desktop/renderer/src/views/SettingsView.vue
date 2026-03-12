@@ -350,13 +350,13 @@
         <div class="section-label">关于</div>
         <div class="about-card">
           <div class="about-icon">🦞</div>
-          <div class="about-name">OpenClaw Desktop</div>
+          <div class="about-name">MicroClaw</div>
           <div class="about-version">版本 1.0.0</div>
         </div>
         <div class="card-group" style="margin-top: 16px">
           <div class="card-row no-border">
             <span class="row-label">版权</span>
-            <span class="row-value">© 2026 OpenClaw</span>
+            <span class="row-value">© 2026 MicroClaw</span>
           </div>
         </div>
       </div>

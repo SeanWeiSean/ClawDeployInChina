@@ -47,8 +47,8 @@ DEFAULT_NODE_DIR = Path(os.environ.get(
 ))
 
 DEFAULT_DESKTOP_DIR = Path(os.environ.get(
-    "OPENCLAW_DESKTOP_DIR",
-    str(Path.home() / ".openclaw-desktop"),
+    "MICROCLAW_DIR",
+    str(Path.home() / ".microclaw"),
 ))
 
 # Strict pattern for version strings interpolated into URLs/commands
@@ -1005,27 +1005,27 @@ class WindowsSetup:
         candidates = []
         # Bundled inside PyInstaller exe (_MEIPASS)
         if getattr(sys, 'frozen', False) and hasattr(sys, '_MEIPASS'):
-            candidates.append(Path(sys._MEIPASS) / "openclaw-desktop-portable.zip")
+            candidates.append(Path(sys._MEIPASS) / "microclaw-portable.zip")
         # Next to the exe (distribution scenario)
         if getattr(sys, 'frozen', False):
-            candidates.append(Path(sys.executable).parent / "openclaw-desktop-portable.zip")
+            candidates.append(Path(sys.executable).parent / "microclaw-portable.zip")
         # CWD (development scenario)
-        candidates.append(Path.cwd() / "openclaw-desktop-portable.zip")
-        candidates.append(Path.cwd() / "dist" / "openclaw-desktop-portable.zip")
+        candidates.append(Path.cwd() / "microclaw-portable.zip")
+        candidates.append(Path.cwd() / "dist" / "microclaw-portable.zip")
         for p in candidates:
             if p.exists():
                 return p
         return None
 
     def install_desktop_client(self) -> bool:
-        """Install OpenClaw Desktop (Electron portable).
+        """Install MicroClaw (Electron portable).
 
         Priority: local zip next to exe > network download.
         """
         install_dir = DEFAULT_DESKTOP_DIR
 
         # Skip if already installed
-        exe_path = install_dir / "OpenClaw.exe"
+        exe_path = install_dir / "MicroClaw.exe"
         if exe_path.exists():
             self.log.info(f"桌面客户端已存在: {exe_path}")
             return True
@@ -1046,10 +1046,10 @@ class WindowsSetup:
             self.log.error(f"Invalid desktop download URL: {download_url!r}")
             return False
 
-        self.log.step("下载 OpenClaw 桌面客户端…")
+        self.log.step("下载 MicroClaw 桌面客户端…")
         try:
-            tmp_dir = Path(tempfile.mkdtemp(prefix="openclaw_desktop_"))
-            zip_path = tmp_dir / "openclaw-desktop.zip"
+            tmp_dir = Path(tempfile.mkdtemp(prefix="microclaw_"))
+            zip_path = tmp_dir / "microclaw.zip"
             self._download_with_progress(download_url, zip_path)
             result = self._extract_desktop_zip(zip_path, install_dir)
             shutil.rmtree(tmp_dir, ignore_errors=True)
@@ -1074,13 +1074,13 @@ class WindowsSetup:
             self.log.error(f"解压失败: {e}")
             return False
 
-        exe_path = install_dir / "OpenClaw.exe"
+        exe_path = install_dir / "MicroClaw.exe"
 
         # electron-builder portable may nest inside a subfolder
         # e.g. "win-unpacked/" — detect and flatten if needed
         subdirs = [d for d in install_dir.iterdir() if d.is_dir()]
         if not exe_path.exists() and len(subdirs) == 1:
-            nested_exe = subdirs[0] / "OpenClaw.exe"
+            nested_exe = subdirs[0] / "MicroClaw.exe"
             if nested_exe.exists():
                 for item in subdirs[0].iterdir():
                     dest = install_dir / item.name
@@ -1116,7 +1116,7 @@ class WindowsSetup:
         """Find the desktop client exe."""
         install_dir = DEFAULT_DESKTOP_DIR
         # Primary name
-        exe = install_dir / "OpenClaw.exe"
+        exe = install_dir / "MicroClaw.exe"
         if exe.exists():
             return exe
         # Fallback: any exe in the directory
@@ -1124,7 +1124,7 @@ class WindowsSetup:
         return exes[0] if exes else None
 
     def create_desktop_shortcut(self) -> bool:
-        """Create a desktop shortcut for the OpenClaw Desktop client.
+        """Create a desktop shortcut for the MicroClaw client.
 
         If the Electron client is installed, create a .lnk pointing to it.
         Otherwise, fall back to a .url shortcut opening the gateway dashboard.
@@ -1159,10 +1159,12 @@ class WindowsSetup:
 
     def _create_lnk_shortcut(self, desktop: Path, target_exe: Path) -> bool:
         """Create a proper .lnk shortcut to the Electron app via PowerShell."""
-        shortcut_path = desktop / "OpenClaw.lnk"
+        shortcut_path = desktop / "MicroClaw.lnk"
         # Remove stale .url shortcut if exists
         stale_url = desktop / "OpenClaw.url"
         stale_url.unlink(missing_ok=True)
+        stale_lnk = desktop / "OpenClaw.lnk"
+        stale_lnk.unlink(missing_ok=True)
 
         try:
             # Find icon
@@ -1176,7 +1178,7 @@ class WindowsSetup:
                 f'$s = $ws.CreateShortcut("{shortcut_path}");'
                 f'$s.TargetPath = "{target_exe}";'
                 f'$s.WorkingDirectory = "{target_exe.parent}";'
-                f'$s.Description = "OpenClaw Desktop";'
+                f'$s.Description = "MicroClaw";'
                 f'{ico_arg}'
                 f'$s.Save()'
             )
@@ -1219,7 +1221,7 @@ class WindowsSetup:
         if token:
             url += f"?token={token}"
 
-        shortcut_path = desktop / "OpenClaw.url"
+        shortcut_path = desktop / "MicroClaw.url"
         try:
             content = f"[InternetShortcut]\nURL={url}\nIconIndex=0\n"
             ico_path = self._resolve_icon()

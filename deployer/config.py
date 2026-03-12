@@ -63,7 +63,7 @@ DEFAULT_CONFIG: dict[str, Any] = {
         "install_daemon": True,
     },
     "desktop": {
-        "download_url": os.environ.get("OPENCLAW_DESKTOP_URL", ""),
+        "download_url": os.environ.get("MICROCLAW_URL", ""),
         "version": "latest",
     },
     "model": {
