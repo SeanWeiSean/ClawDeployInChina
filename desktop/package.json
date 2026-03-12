@@ -1,0 +1,28 @@
+{
+  "name": "openclaw-desktop",
+  "version": "1.0.0",
+  "description": "OpenClaw Desktop - Custom chat UI with built-in gateway",
+  "private": true,
+  "main": "dist/main.js",
+  "scripts": {
+    "dev": "concurrently -n vite,electron \"npm run dev:renderer\" \"npm run dev:electron\"",
+    "dev:renderer": "cd renderer && npm run dev",
+    "dev:electron": "tsc && electron .",
+    "build": "tsc && cd renderer && npm run build",
+    "pack": "npm run build && electron-builder --win --dir",
+    "dist": "npm run build && electron-builder --win",
+    "prepare-resources": "node scripts/prepare-resources.mjs",
+    "postinstall": "cd renderer && npm install"
+  },
+  "devDependencies": {
+    "@types/ws": "^8.18.1",
+    "concurrently": "^9.0.0",
+    "electron": "^33.0.0",
+    "electron-builder": "^25.0.0",
+    "typescript": "^5.7.0"
+  },
+  "dependencies": {
+    "electron-store": "^8.2.0",
+    "ws": "^8.19.0"
+  }
+}

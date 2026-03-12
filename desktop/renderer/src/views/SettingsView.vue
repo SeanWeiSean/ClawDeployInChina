@@ -1,0 +1,807 @@
+<template>
+  <div class="settings-view">
+    <!-- Left sidebar: icon grid nav -->
+    <div class="settings-sidebar">
+      <div class="settings-title">设置</div>
+      <div class="menu-list">
+        <div
+          v-for="item in menuItems"
+          :key="item.id"
+          class="settings-menu-item"
+          :class="{ active: activeSection === item.id }"
+          @click="activeSection = item.id"
+        >
+          <span class="menu-icon" :style="{ background: item.color }" v-html="item.svg"></span>
+          <span class="menu-label">{{ item.label }}</span>
+        </div>
+      </div>
+    </div>
+
+    <!-- Right content: grouped card rows -->
+    <div class="settings-content">
+      <!-- General -->
+      <div v-if="activeSection === 'general'" class="section">
+        <div class="section-label">通用</div>
+        <div class="card-group">
+          <div class="card-row">
+            <span class="row-label">语言</span>
+            <el-select v-model="settings.language" size="small" style="width: 140px">
+              <el-option label="简体中文" value="zh-CN" />
+              <el-option label="English" value="en" />
+            </el-select>
+          </div>
+          <div class="card-row">
+            <span class="row-label">开机自启</span>
+            <el-switch v-model="settings.autoStart" />
+          </div>
+          <div class="card-row no-border">
+            <span class="row-label">启动时最小化到托盘</span>
+            <el-switch v-model="settings.startMinimized" />
+          </div>
+        </div>
+      </div>
+
+      <!-- Theme -->
+      <div v-if="activeSection === 'theme'" class="section">
+        <div class="section-label">外观</div>
+        <div class="card-group">
+          <div class="card-row">
+            <span class="row-label">主题模式</span>
+            <el-radio-group v-model="settings.themeMode" size="small">
+              <el-radio value="light">浅色</el-radio>
+              <el-radio value="dark">深色</el-radio>
+              <el-radio value="system">跟随系统</el-radio>
+            </el-radio-group>
+          </div>
+          <div class="card-row no-border">
+            <span class="row-label">强调色</span>
+            <el-color-picker v-model="settings.accentColor" size="small" />
+          </div>
+        </div>
+      </div>
+
+      <!-- Usage -->
+      <div v-if="activeSection === 'usage'" class="section">
+        <div class="section-label">用量</div>
+        <div class="card-group">
+          <div class="card-row no-border placeholder-row">
+            <span class="placeholder-text">API 调用和 Token 用量统计将在这里显示。</span>
+          </div>
+        </div>
+        <div class="section-footer">需要 Gateway 运行中才能获取数据。</div>
+      </div>
+
+      <!-- Models & API -->
+      <div v-if="activeSection === 'models'" class="section">
+        <div class="section-header">
+          <div class="section-header-title">Models & API</div>
+          <el-button size="small" @click="reconnectGateway">Reconnect</el-button>
+        </div>
+
+        <!-- Built-in Models -->
+        <div class="sub-label">Built-in Models</div>
+        <div class="card-group">
+          <div
+            v-for="m in builtinModels"
+            :key="m.id"
+            class="card-row no-border"
+          >
+            <span class="row-label">{{ m.name }}</span>
+            <span v-if="m.id === selectedModel" class="badge badge-green">Current Selection</span>
+            <el-button v-else size="small" @click="selectModel(m.id)">Select</el-button>
+          </div>
+        </div>
+
+        <!-- Custom Models -->
+        <div class="sub-label-row">
+          <span class="sub-label" style="margin-bottom:0">Custom Models</span>
+          <el-button size="small" @click="showAddModel = true">Add Custom Model</el-button>
+        </div>
+        <div class="card-group">
+          <template v-if="customModels.length">
+            <div
+              v-for="(m, idx) in customModels"
+              :key="m.id"
+              class="card-row"
+              :class="{ 'no-border': idx === customModels.length - 1 }"
+            >
+              <div class="custom-model-info">
+                <span class="row-label">{{ m.name }}</span>
+                <span class="row-sub">{{ m.baseUrl }}</span>
+              </div>
+              <div class="custom-model-actions">
+                <span v-if="m.id === selectedModel" class="badge badge-green">Current Selection</span>
+                <el-button v-else size="small" @click="selectModel(m.id)">Select</el-button>
+                <el-button size="small" type="danger" plain @click="removeCustomModel(idx)">Delete</el-button>
+              </div>
+            </div>
+          </template>
+          <div v-else class="card-row no-border placeholder-row">
+            <span class="placeholder-text">No custom models yet</span>
+          </div>
+        </div>
+
+        <!-- Add Custom Model dialog -->
+        <el-dialog v-model="showAddModel" title="Add Custom Model" width="420px" :close-on-click-modal="false">
+          <el-form label-position="top" @submit.prevent>
+            <el-form-item label="Model Name">
+              <el-input v-model="newModel.name" placeholder="e.g. my-gpt-4o" />
+            </el-form-item>
+            <el-form-item label="Base URL">
+              <el-input v-model="newModel.baseUrl" placeholder="https://api.example.com/v1" />
+            </el-form-item>
+            <el-form-item label="API Key">
+              <el-input v-model="newModel.apiKey" type="password" show-password placeholder="sk-..." />
+            </el-form-item>
+          </el-form>
+          <template #footer>
+            <el-button @click="showAddModel = false">Cancel</el-button>
+            <el-button type="primary" @click="addCustomModel">Add</el-button>
+          </template>
+        </el-dialog>
+
+        <!-- Gateway URL -->
+        <div class="sub-label-row" style="margin-top: 28px">
+          <div style="display:flex;align-items:center;gap:8px">
+            <span class="sub-label" style="margin-bottom:0">Gateway URL</span>
+            <span class="badge" :class="gateway.status === 'running' ? 'badge-green' : 'badge-red'">
+              {{ gateway.status === 'running' ? 'Connected' : gateway.status }}
+            </span>
+          </div>
+          <div style="display:flex;gap:8px">
+            <el-button size="small" @click="reconnectGateway">Reconnect</el-button>
+            <el-button size="small" type="danger" @click="resetConnection">Reset Connection</el-button>
+          </div>
+        </div>
+
+        <!-- Port -->
+        <div class="card-group" style="margin-top: 12px">
+          <div class="card-row no-border port-row">
+            <div class="port-info">
+              <div class="port-title">Port</div>
+              <div class="port-desc">Gateway will restart automatically after changing the port. If the default port is occupied, the system will try adjacent ports.</div>
+            </div>
+            <div class="port-input-group">
+              <span class="port-prefix">ws://127.0.0.1 :</span>
+              <el-input
+                v-model="gatewayPort"
+                size="small"
+                style="width: 80px"
+                @change="saveGatewayPort"
+              />
+            </div>
+          </div>
+        </div>
+      </div>
+
+      <!-- Skills -->
+      <div v-if="activeSection === 'skills'" class="section">
+        <div class="section-label">技能管理</div>
+        <div class="card-group">
+          <div class="card-row no-border placeholder-row">
+            <span class="placeholder-text">已注册的工具和技能列表将在这里显示。</span>
+          </div>
+        </div>
+      </div>
+
+      <!-- Workspace -->
+      <div v-if="activeSection === 'workspace'" class="section">
+        <div class="section-label">工作区</div>
+        <div class="card-group">
+          <div class="card-row">
+            <span class="row-label">数据目录</span>
+            <span class="row-value">{{ stateDir }}</span>
+          </div>
+          <div class="card-row no-border">
+            <span class="row-label">网关端口</span>
+            <span class="row-value">{{ gateway.port }}</span>
+          </div>
+        </div>
+      </div>
+
+      <!-- Data & Privacy -->
+      <div v-if="activeSection === 'privacy'" class="section">
+        <div class="section-label">数据与隐私</div>
+        <div class="card-group">
+          <div class="card-row no-border">
+            <span class="row-label">聊天记录</span>
+            <el-button type="danger" plain size="small" @click="clearChatHistory">清除所有记录</el-button>
+          </div>
+        </div>
+      </div>
+
+      <!-- About -->
+      <div v-if="activeSection === 'about'" class="section">
+        <div class="section-label">关于</div>
+        <div class="about-card">
+          <div class="about-icon">🦞</div>
+          <div class="about-name">OpenClaw Desktop</div>
+          <div class="about-version">版本 1.0.0</div>
+        </div>
+        <div class="card-group" style="margin-top: 16px">
+          <div class="card-row no-border">
+            <span class="row-label">版权</span>
+            <span class="row-value">© 2026 OpenClaw</span>
+          </div>
+        </div>
+      </div>
+    </div>
+  </div>
+</template>
+
+<script setup lang="ts">
+import { ref, reactive, onMounted, watch } from "vue";
+import { useGatewayStore } from "@/stores/gateway";
+import { useChatStore } from "@/stores/chat";
+import { ElMessage, ElMessageBox } from "element-plus";
+
+const gateway = useGatewayStore();
+const chatStore = useChatStore();
+
+const activeSection = ref("general");
+const stateDir = ref("");
+
+const settings = reactive({
+  language: "zh-CN",
+  autoStart: false,
+  startMinimized: false,
+  themeMode: "dark",
+  accentColor: "#4a90d9",
+});
+
+// --- Models & API state ---
+interface ModelEntry {
+  id: string;
+  name: string;
+  baseUrl?: string;
+  apiKey?: string;
+}
+
+const builtinModels = ref<ModelEntry[]>([
+  { id: "Pony-Alpha-2", name: "Pony-Alpha-2" },
+]);
+const customModels = ref<ModelEntry[]>([]);
+const selectedModel = ref("Pony-Alpha-2");
+const gatewayPort = ref("18789");
+const showAddModel = ref(false);
+const newModel = reactive({ name: "", baseUrl: "", apiKey: "" });
+
+const svg = {
+  general: `<svg viewBox="0 0 20 20" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round"><circle cx="10" cy="10" r="2.5"/><path d="M10 2v2M10 16v2M2 10h2M16 10h2M4.22 4.22l1.42 1.42M14.36 14.36l1.42 1.42M4.22 15.78l1.42-1.42M14.36 5.64l1.42-1.42"/></svg>`,
+  theme: `<svg viewBox="0 0 20 20" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round"><circle cx="10" cy="10" r="7"/><path d="M10 3a7 7 0 0 1 0 14V3z" fill="currentColor" stroke="none"/></svg>`,
+  usage: `<svg viewBox="0 0 20 20" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round"><rect x="3" y="12" width="3" height="5" rx="1"/><rect x="8.5" y="8" width="3" height="9" rx="1"/><rect x="14" y="4" width="3" height="13" rx="1"/></svg>`,
+  models: `<svg viewBox="0 0 20 20" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round"><circle cx="10" cy="7" r="3"/><path d="M4 17c0-3.314 2.686-5 6-5s6 1.686 6 5"/><circle cx="15" cy="5" r="1.5"/><circle cx="5" cy="5" r="1.5"/></svg>`,
+  skills: `<svg viewBox="0 0 20 20" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round"><path d="M14.5 2.5a2 2 0 0 1 2.83 2.83l-9.9 9.9-3.54.71.71-3.54 9.9-9.9z"/></svg>`,
+  workspace: `<svg viewBox="0 0 20 20" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round"><path d="M3 6l7-3 7 3v10l-7 3-7-3V6z"/><path d="M10 3v14M3 6l7 4 7-4"/></svg>`,
+  privacy: `<svg viewBox="0 0 20 20" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round"><rect x="4" y="9" width="12" height="9" rx="2"/><path d="M7 9V6a3 3 0 0 1 6 0v3"/><circle cx="10" cy="14" r="1" fill="currentColor" stroke="none"/></svg>`,
+  about: `<svg viewBox="0 0 20 20" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round"><circle cx="10" cy="10" r="7"/><path d="M10 9v5"/><circle cx="10" cy="6.5" r="0.75" fill="currentColor" stroke="none"/></svg>`,
+};
+
+const menuItems = [
+  { id: "general", label: "通用", color: "#636366", svg: svg.general },
+  { id: "theme", label: "外观", color: "#5856d6", svg: svg.theme },
+  { id: "usage", label: "用量", color: "#34c759", svg: svg.usage },
+  { id: "models", label: "模型", color: "#007aff", svg: svg.models },
+  { id: "skills", label: "技能", color: "#ff9500", svg: svg.skills },
+  { id: "workspace", label: "工作区", color: "#64748b", svg: svg.workspace },
+  { id: "privacy", label: "隐私", color: "#ff3b30", svg: svg.privacy },
+  { id: "about", label: "关于", color: "#5856d6", svg: svg.about },
+];
+
+// --- Theme & accent helpers ---
+function applyTheme(mode: string) {
+  const html = document.documentElement;
+  html.classList.remove("light", "dark");
+  if (mode === "system") {
+    const prefersDark = window.matchMedia("(prefers-color-scheme: dark)").matches;
+    html.classList.add(prefersDark ? "dark" : "light");
+  } else {
+    html.classList.add(mode);
+  }
+}
+
+function setAccentColor(hex: string) {
+  const doc = document.documentElement;
+  doc.style.setProperty("--accent", hex);
+  const r = parseInt(hex.slice(1, 3), 16);
+  const g = parseInt(hex.slice(3, 5), 16);
+  const b = parseInt(hex.slice(5, 7), 16);
+  doc.style.setProperty("--accent-subtle", `rgba(${r}, ${g}, ${b}, 0.10)`);
+  const darken = (v: number) => Math.max(0, Math.round(v * 0.8));
+  doc.style.setProperty("--accent-hover", `rgb(${darken(r)}, ${darken(g)}, ${darken(b)})`);
+}
+
+// --- Persist settings on change ---
+watch(() => settings.language, (v) => window.openclaw.settings.set("language", v));
+watch(() => settings.autoStart, (v) => window.openclaw.settings.set("autoStart", v));
+watch(() => settings.startMinimized, (v) => window.openclaw.settings.set("startMinimized", v));
+watch(() => settings.themeMode, (v) => {
+  window.openclaw.settings.set("themeMode", v);
+  applyTheme(v);
+});
+watch(() => settings.accentColor, (v) => {
+  if (v) {
+    window.openclaw.settings.set("accentColor", v);
+    setAccentColor(v);
+  }
+});
+
+onMounted(async () => {
+  stateDir.value = await window.openclaw.config.getStateDir();
+
+  // Load persisted app settings
+  const saved = await window.openclaw.settings.get();
+  if (saved) {
+    settings.language = saved.language ?? "zh-CN";
+    settings.autoStart = saved.autoStart ?? false;
+    settings.startMinimized = saved.startMinimized ?? false;
+    settings.themeMode = saved.themeMode ?? "dark";
+    settings.accentColor = saved.accentColor ?? "#4a90d9";
+  }
+
+  // Load existing config for models & gateway
+  const config = await window.openclaw.config.read();
+  if (config) {
+    // Gateway port
+    gatewayPort.value = String(config.gateway?.port ?? (gateway.port || 18789));
+
+    // Selected model
+    const primary = config.agents?.defaults?.model?.primary;
+    if (primary) selectedModel.value = primary;
+
+    // Custom models from config
+    const providers = config.models?.providers ?? {};
+    const loaded: ModelEntry[] = [];
+    for (const [key, val] of Object.entries(providers) as [string, any][]) {
+      const models = val.models ?? [];
+      for (const m of models) {
+        loaded.push({
+          id: m.id ?? key,
+          name: m.name ?? m.id ?? key,
+          baseUrl: val.baseUrl ?? "",
+          apiKey: val.apiKey ?? "",
+        });
+      }
+    }
+    customModels.value = loaded;
+  }
+});
+
+// --- Model & Gateway actions ---
+
+async function persistModelsConfig() {
+  const config = (await window.openclaw.config.read()) || {};
+  const providerConfig: Record<string, any> = {};
+
+  for (const m of customModels.value) {
+    const key = m.id.replace(/[^a-zA-Z0-9_-]/g, "_");
+    providerConfig[key] = {
+      baseUrl: m.baseUrl || "",
+      apiKey: m.apiKey || "",
+      api: "openai-chat",
+      models: [{ id: m.id, name: m.name }],
+    };
+  }
+
+  config.models = { mode: "merge", providers: providerConfig };
+  config.agents = config.agents || {};
+  config.agents.defaults = config.agents.defaults || {};
+  config.agents.defaults.model = { primary: selectedModel.value };
+
+  await window.openclaw.config.write(config);
+}
+
+async function selectModel(id: string) {
+  selectedModel.value = id;
+  try {
+    await persistModelsConfig();
+    await window.openclaw.gateway.restart();
+    ElMessage.success("Model switched to " + id);
+  } catch (err: any) {
+    ElMessage.error("Failed: " + err.message);
+  }
+}
+
+async function addCustomModel() {
+  const name = newModel.name.trim();
+  if (!name) { ElMessage.warning("Model name is required"); return; }
+  customModels.value.push({
+    id: name,
+    name,
+    baseUrl: newModel.baseUrl.trim(),
+    apiKey: newModel.apiKey.trim(),
+  });
+  showAddModel.value = false;
+  newModel.name = "";
+  newModel.baseUrl = "";
+  newModel.apiKey = "";
+  try {
+    await persistModelsConfig();
+    ElMessage.success("Custom model added");
+  } catch (err: any) {
+    ElMessage.error("Failed: " + err.message);
+  }
+}
+
+async function removeCustomModel(idx: number) {
+  const removed = customModels.value[idx];
+  customModels.value.splice(idx, 1);
+  if (removed.id === selectedModel.value && builtinModels.value.length) {
+    selectedModel.value = builtinModels.value[0].id;
+  }
+  try {
+    await persistModelsConfig();
+    ElMessage.success("Custom model removed");
+  } catch (err: any) {
+    ElMessage.error("Failed: " + err.message);
+  }
+}
+
+async function reconnectGateway() {
+  try {
+    await window.openclaw.gateway.restart();
+    ElMessage.success("Gateway reconnecting...");
+  } catch (err: any) {
+    ElMessage.error("Reconnect failed: " + err.message);
+  }
+}
+
+async function resetConnection() {
+  try {
+    await ElMessageBox.confirm(
+      "This will reset the gateway connection. Continue?",
+      "Reset Connection",
+      { type: "warning" }
+    );
+    await window.openclaw.gateway.restart();
+    ElMessage.success("Connection reset");
+  } catch {
+    // Cancelled
+  }
+}
+
+async function saveGatewayPort() {
+  const port = parseInt(gatewayPort.value, 10);
+  if (!port || port < 1 || port > 65535) {
+    ElMessage.warning("Invalid port number");
+    return;
+  }
+  try {
+    const config = (await window.openclaw.config.read()) || {};
+    config.gateway = config.gateway || {};
+    config.gateway.port = port;
+    await window.openclaw.config.write(config);
+    await window.openclaw.gateway.restart();
+    ElMessage.success("Port updated, gateway restarting...");
+  } catch (err: any) {
+    ElMessage.error("Failed: " + err.message);
+  }
+}
+
+async function clearChatHistory() {
+  try {
+    await ElMessageBox.confirm("确定要清除所有聊天记录吗？此操作不可撤销。", "确认", {
+      type: "warning",
+    });
+    chatStore.newSession();
+    ElMessage.success("聊天记录已清除");
+  } catch {
+    // Cancelled
+  }
+}
+</script>
+
+<style scoped>
+.settings-view {
+  display: flex;
+  height: 100%;
+  background: var(--bg-primary);
+}
+
+/* ── Left sidebar ── */
+.settings-sidebar {
+  width: 210px;
+  min-width: 210px;
+  background: var(--bg-primary);
+  border-right: 1px solid var(--border);
+  display: flex;
+  flex-direction: column;
+  padding: 20px 0 12px;
+}
+
+.settings-title {
+  padding: 0 16px 16px;
+  font-size: 20px;
+  font-weight: 700;
+  color: var(--text-primary);
+  letter-spacing: -0.02em;
+}
+
+.menu-list {
+  flex: 1;
+  overflow-y: auto;
+}
+
+.settings-menu-item {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  padding: 7px 12px 7px 16px;
+  cursor: pointer;
+  border-radius: 8px;
+  margin: 1px 8px;
+  color: var(--text-primary);
+  font-size: 13px;
+  font-weight: 400;
+  transition: background 0.1s;
+}
+
+.settings-menu-item:hover {
+  background: rgba(0, 0, 0, 0.05);
+}
+
+.settings-menu-item.active {
+  background: var(--accent);
+  color: #fff;
+}
+
+.menu-icon {
+  width: 20px;
+  height: 20px;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  flex-shrink: 0;
+  color: var(--text-secondary);
+  background: none !important;
+}
+
+.settings-menu-item.active .menu-icon {
+  color: #fff;
+  background: none !important;
+}
+
+.menu-icon :deep(svg) {
+  width: 16px;
+  height: 16px;
+}
+
+.menu-label {
+  font-size: 13px;
+}
+
+/* ── Right content ── */
+.settings-content {
+  flex: 1;
+  overflow-y: auto;
+  padding: 28px 32px;
+}
+
+.section-label {
+  font-size: 11px;
+  font-weight: 600;
+  color: var(--text-secondary);
+  text-transform: uppercase;
+  letter-spacing: 0.07em;
+  margin-bottom: 8px;
+  padding-left: 4px;
+}
+
+/* Grouped card */
+.card-group {
+  background: var(--bg-grouped);
+  border-radius: 12px;
+  overflow: hidden;
+  border: 1px solid var(--border);
+}
+
+.card-row {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  padding: 11px 16px;
+  border-bottom: 1px solid var(--border-row);
+  gap: 12px;
+  min-height: 44px;
+}
+
+.card-row.no-border {
+  border-bottom: none;
+}
+
+.row-label {
+  font-size: 13.5px;
+  color: var(--text-primary);
+  flex-shrink: 0;
+}
+
+.row-value {
+  font-size: 13px;
+  color: var(--text-secondary);
+  text-align: right;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  max-width: 260px;
+}
+
+.placeholder-row {
+  justify-content: center;
+  padding: 20px 16px;
+}
+
+.placeholder-text {
+  font-size: 13px;
+  color: var(--text-secondary);
+  text-align: center;
+}
+
+.section-footer {
+  font-size: 12px;
+  color: var(--text-muted);
+  padding: 6px 4px 0;
+}
+
+.section-actions {
+  margin-top: 16px;
+  padding-left: 2px;
+}
+
+/* About card */
+.about-card {
+  background: var(--bg-grouped);
+  border-radius: 12px;
+  border: 1px solid var(--border);
+  padding: 28px 16px;
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  gap: 6px;
+}
+
+.about-icon {
+  font-size: 52px;
+  line-height: 1;
+  margin-bottom: 4px;
+}
+
+.about-name {
+  font-size: 17px;
+  font-weight: 600;
+  color: var(--text-primary);
+  letter-spacing: -0.01em;
+}
+
+.about-version {
+  font-size: 13px;
+  color: var(--text-secondary);
+}
+
+/* Models & API */
+.section-header {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  margin-bottom: 20px;
+}
+
+.section-header-title {
+  font-size: 22px;
+  font-weight: 700;
+  color: var(--text-primary);
+  letter-spacing: -0.02em;
+}
+
+.sub-label {
+  font-size: 13px;
+  font-weight: 600;
+  color: var(--text-primary);
+  margin-bottom: 8px;
+  margin-top: 20px;
+}
+
+.sub-label-row {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  margin-top: 20px;
+  margin-bottom: 8px;
+}
+
+.badge {
+  display: inline-flex;
+  align-items: center;
+  font-size: 12px;
+  font-weight: 500;
+  padding: 3px 12px;
+  border-radius: 20px;
+  white-space: nowrap;
+}
+
+.badge-green {
+  background: rgba(52, 199, 89, 0.12);
+  color: #34c759;
+  border: 1px solid rgba(52, 199, 89, 0.25);
+}
+
+.badge-red {
+  background: rgba(255, 59, 48, 0.12);
+  color: #ff3b30;
+  border: 1px solid rgba(255, 59, 48, 0.25);
+}
+
+.custom-model-info {
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+  min-width: 0;
+}
+
+.custom-model-info .row-sub {
+  font-size: 12px;
+  color: var(--text-muted);
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.custom-model-actions {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  flex-shrink: 0;
+}
+
+.port-row {
+  align-items: flex-start;
+  padding: 16px;
+  gap: 20px;
+}
+
+.port-info {
+  flex: 1;
+  min-width: 0;
+}
+
+.port-title {
+  font-size: 14px;
+  font-weight: 600;
+  color: var(--text-primary);
+  margin-bottom: 4px;
+}
+
+.port-desc {
+  font-size: 12.5px;
+  color: var(--text-secondary);
+  line-height: 1.5;
+}
+
+.port-input-group {
+  display: flex;
+  align-items: center;
+  gap: 4px;
+  flex-shrink: 0;
+  background: var(--bg-input);
+  border: 1px solid var(--border);
+  border-radius: 8px;
+  padding: 4px 8px 4px 12px;
+}
+
+.port-prefix {
+  font-size: 13px;
+  color: var(--text-muted);
+  white-space: nowrap;
+}
+
+.port-input-group :deep(.el-input__wrapper) {
+  box-shadow: none !important;
+  background: transparent;
+  padding: 0;
+}
+
+.port-input-group :deep(.el-input__inner) {
+  font-size: 13px;
+  text-align: center;
+  font-weight: 600;
+}
+</style>
