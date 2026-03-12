@@ -276,6 +276,38 @@ function registerIpcHandlers(): void {
     fs.writeFileSync(getConfigPath(), JSON.stringify(config, null, 2), "utf-8");
   });
 
+  // --- Skills ---
+  ipcMain.handle("skills:list", () => {
+    const homeDir = app.getPath("home");
+    const builtinDir = path.join(homeDir, ".openclaw-node", "node_modules", "openclaw", "skills");
+    const customDir = path.join(homeDir, ".agents", "skills");
+
+    function scanSkills(dir: string, source: "builtin" | "custom"): any[] {
+      const results: any[] = [];
+      if (!fs.existsSync(dir)) return results;
+      for (const entry of fs.readdirSync(dir, { withFileTypes: true })) {
+        if (!entry.isDirectory()) continue;
+        const skillMd = path.join(dir, entry.name, "SKILL.md");
+        let name = entry.name;
+        let description = "";
+        if (fs.existsSync(skillMd)) {
+          const head = fs.readFileSync(skillMd, "utf-8").slice(0, 1000);
+          const nameMatch = head.match(/^name:\s*(.+)/m);
+          const descMatch = head.match(/^description:\s*(.+)/m);
+          if (nameMatch) name = nameMatch[1].trim();
+          if (descMatch) description = descMatch[1].replace(/^["']|["']$/g, "").trim();
+        }
+        results.push({ id: entry.name, name, description, source });
+      }
+      return results;
+    }
+
+    return {
+      builtin: scanSkills(builtinDir, "builtin"),
+      custom: scanSkills(customDir, "custom"),
+    };
+  });
+
   // --- Chat (WebSocket gateway protocol) ---
   ipcMain.handle("chat:send-message", async (_event, params: { sessionKey: string; message: string }) => {
     if (!gwClient?.connected) throw new Error("Gateway not connected");

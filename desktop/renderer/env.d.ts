@@ -22,6 +22,13 @@ interface AppSettings {
   accentColor: string;
 }
 
+interface SkillEntry {
+  id: string;
+  name: string;
+  description: string;
+  source: 'builtin' | 'custom';
+}
+
 interface OpenClawAPI {
   gateway: {
     getPort(): Promise<number>;
@@ -42,6 +49,9 @@ interface OpenClawAPI {
   settings: {
     get(): Promise<AppSettings>;
     set(key: string, value: any): Promise<void>;
+  };
+  skills: {
+    list(): Promise<{ builtin: SkillEntry[]; custom: SkillEntry[] }>;
   };
   chat: {
     isConnected(): Promise<boolean>;

@@ -190,9 +190,48 @@
       <!-- Skills -->
       <div v-if="activeSection === 'skills'" class="section">
         <div class="section-label">技能管理</div>
+
+        <!-- Built-in Skills -->
+        <div class="sub-label" style="margin-top:0">Built-in Skills ({{ builtinSkills.length }})</div>
         <div class="card-group">
-          <div class="card-row no-border placeholder-row">
-            <span class="placeholder-text">已注册的工具和技能列表将在这里显示。</span>
+          <template v-if="builtinSkills.length">
+            <div
+              v-for="(skill, idx) in builtinSkills"
+              :key="skill.id"
+              class="card-row"
+              :class="{ 'no-border': idx === builtinSkills.length - 1 }"
+            >
+              <div class="skill-info">
+                <span class="row-label">{{ skill.name }}</span>
+                <span class="skill-desc">{{ skill.description }}</span>
+              </div>
+              <span class="badge badge-green">Built-in</span>
+            </div>
+          </template>
+          <div v-else class="card-row no-border placeholder-row">
+            <span class="placeholder-text">未检测到内置技能</span>
+          </div>
+        </div>
+
+        <!-- Custom Skills -->
+        <div class="sub-label">Custom Skills ({{ customSkills.length }})</div>
+        <div class="card-group">
+          <template v-if="customSkills.length">
+            <div
+              v-for="(skill, idx) in customSkills"
+              :key="skill.id"
+              class="card-row"
+              :class="{ 'no-border': idx === customSkills.length - 1 }"
+            >
+              <div class="skill-info">
+                <span class="row-label">{{ skill.name }}</span>
+                <span class="skill-desc">{{ skill.description }}</span>
+              </div>
+              <span class="badge badge-blue">Custom</span>
+            </div>
+          </template>
+          <div v-else class="card-row no-border placeholder-row">
+            <span class="placeholder-text">暂无自定义技能</span>
           </div>
         </div>
       </div>
@@ -281,6 +320,9 @@ const showAddModel = ref(false);
 const newModel = reactive({ name: "", baseUrl: "", apiKey: "", apiFormat: "openai" as 'openai' | 'anthropic' });
 const testLoading = ref(false);
 const testResult = ref<{ ok: boolean; message: string } | null>(null);
+
+const builtinSkills = ref<{ id: string; name: string; description: string }[]>([]);
+const customSkills = ref<{ id: string; name: string; description: string }[]>([]);
 
 const svg = {
   general: `<svg viewBox="0 0 20 20" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round"><circle cx="10" cy="10" r="2.5"/><path d="M10 2v2M10 16v2M2 10h2M16 10h2M4.22 4.22l1.42 1.42M14.36 14.36l1.42 1.42M4.22 15.78l1.42-1.42M14.36 5.64l1.42-1.42"/></svg>`,
@@ -381,6 +423,15 @@ onMounted(async () => {
       }
     }
     customModels.value = loaded;
+  }
+
+  // Load skills from disk
+  try {
+    const skills = await window.openclaw.skills.list();
+    builtinSkills.value = skills.builtin;
+    customSkills.value = skills.custom;
+  } catch {
+    // Skills listing not available
   }
 });
 
@@ -884,5 +935,27 @@ async function clearChatHistory() {
 
 .test-fail {
   color: #ff3b30;
+}
+
+.skill-info {
+  display: flex;
+  flex-direction: column;
+  gap: 3px;
+  min-width: 0;
+  flex: 1;
+}
+
+.skill-desc {
+  font-size: 12px;
+  color: var(--text-muted);
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.badge-blue {
+  background: rgba(0, 122, 255, 0.12);
+  color: #007aff;
+  border: 1px solid rgba(0, 122, 255, 0.25);
 }
 </style>

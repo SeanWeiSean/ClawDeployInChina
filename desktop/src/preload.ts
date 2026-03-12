@@ -43,6 +43,11 @@ contextBridge.exposeInMainWorld("openclaw", {
     set: (key: string, value: any) => ipcRenderer.invoke("settings:set", key, value),
   },
 
+  // --- Skills ---
+  skills: {
+    list: () => ipcRenderer.invoke("skills:list"),
+  },
+
   // --- Chat (session-based via WebSocket gateway protocol) ---
   chat: {
     /** Check if the WS gateway connection is alive. */
