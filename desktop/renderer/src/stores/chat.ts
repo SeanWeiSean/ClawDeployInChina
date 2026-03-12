@@ -1,5 +1,6 @@
 import { defineStore } from "pinia";
 import { ref } from "vue";
+import { useSessionStore } from "./sessions";
 
 /**
  * Chat store — mirrors the webchat gateway protocol.
@@ -20,7 +21,7 @@ export interface ChatMessage {
 
 export const useChatStore = defineStore("chat", () => {
   // ── State ──
-  const sessionKey = ref("default");
+  const sessionKey = ref("main");
   /** The resolved session key returned by the gateway (may differ from what we send). */
   const resolvedSessionKey = ref<string | null>(null);
   const messages = ref<ChatMessage[]>([]);
@@ -35,6 +36,53 @@ export const useChatStore = defineStore("chat", () => {
 
   /** Per-agent last message preview text */
   const lastMessageMap = ref<Record<string, string>>({});
+
+  // ── Per-session streaming state cache ──
+  // When switching away from a session that is still streaming,
+  // we save its streaming state here so it can be restored later.
+  interface SessionStreamState {
+    streaming: boolean;
+    streamText: string;
+    streamStartedAt: number | null;
+    chatRunId: string | null;
+    resolvedSessionKey: string | null;
+    messages: ChatMessage[];
+    sending: boolean;
+  }
+  const sessionStateCache = new Map<string, SessionStreamState>();
+
+  /** Save current session's volatile state into the cache. */
+  function _saveCurrentState() {
+    const key = sessionKey.value;
+    if (!key) return;
+    if (streaming.value || sending.value) {
+      sessionStateCache.set(key, {
+        streaming: streaming.value,
+        streamText: streamText.value,
+        streamStartedAt: streamStartedAt.value,
+        chatRunId: chatRunId.value,
+        resolvedSessionKey: resolvedSessionKey.value,
+        messages: [...messages.value],
+        sending: sending.value,
+      });
+    } else {
+      sessionStateCache.delete(key);
+    }
+  }
+
+  /** Restore a session's volatile state from the cache (returns true if restored). */
+  function _restoreState(key: string): boolean {
+    const cached = sessionStateCache.get(key);
+    if (!cached) return false;
+    streaming.value = cached.streaming;
+    streamText.value = cached.streamText;
+    streamStartedAt.value = cached.streamStartedAt;
+    chatRunId.value = cached.chatRunId;
+    resolvedSessionKey.value = cached.resolvedSessionKey;
+    messages.value = cached.messages;
+    sending.value = cached.sending;
+    return true;
+  }
 
   // ── Helpers ──
 
@@ -55,7 +103,20 @@ export const useChatStore = defineStore("chat", () => {
 
   /** Switch to a different session. */
   async function switchSession(key: string) {
+    // Save the current session's volatile state (including streaming)
+    _syncToSessionStore();
+    _saveCurrentState();
+
     sessionKey.value = key;
+    const sessionStore = useSessionStore();
+    sessionStore.ensureSession(key);
+
+    // Try to restore cached state (streaming session we switched away from)
+    if (_restoreState(key)) {
+      return; // restored — don't overwrite with loadHistory
+    }
+
+    resolvedSessionKey.value = null;
     await loadHistory();
   }
 
@@ -75,6 +136,8 @@ export const useChatStore = defineStore("chat", () => {
       streaming.value = false;
       chatRunId.value = null;
       streamStartedAt.value = null;
+      // Remove from cache since we now have authoritative data
+      sessionStateCache.delete(sessionKey.value);
     } catch (err) {
       lastError.value = String(err);
     } finally {
@@ -119,10 +182,21 @@ export const useChatStore = defineStore("chat", () => {
   /** Handle an incoming chat event from the gateway. */
   function handleChatEvent(payload: ChatEventPayload) {
     // The gateway normalizes session keys (e.g. "default" → "agent:main:default").
-    // Accept events that match either our sent key or the resolved key.
     const incoming = payload.sessionKey;
-    if (incoming !== sessionKey.value && incoming !== resolvedSessionKey.value) {
-      // First event for this session — learn the resolved key
+
+    // Check if this event belongs to the current active session
+    const isActive = incoming === sessionKey.value || incoming === resolvedSessionKey.value;
+
+    // Check if this event belongs to a background (cached) session
+    if (!isActive) {
+      // Try to match against cached sessions' resolved keys
+      for (const [cachedKey, cached] of sessionStateCache) {
+        if (incoming === cachedKey || incoming === cached.resolvedSessionKey) {
+          _handleBackgroundEvent(cachedKey, cached, payload);
+          return;
+        }
+      }
+      // First event for active session — learn the resolved key
       if (streaming.value && !resolvedSessionKey.value) {
         resolvedSessionKey.value = incoming;
       } else {
@@ -154,6 +228,8 @@ export const useChatStore = defineStore("chat", () => {
       streaming.value = false;
       chatRunId.value = null;
       streamStartedAt.value = null;
+      // Reload history to get the authoritative server-side version (like webchat)
+      loadHistory();
     } else if (payload.state === "aborted") {
       const msg = payload.message as ChatMessage | undefined;
       if (msg) {
@@ -188,8 +264,11 @@ export const useChatStore = defineStore("chat", () => {
     }
   }
 
-  /** Start a new session. */
+  /** Start a new session (preserves the old one). */
   function newSession() {
+    // Save the current session before switching
+    _syncToSessionStore();
+
     const key = `session-${Date.now()}-${Math.random().toString(36).slice(2, 8)}`;
     sessionKey.value = key;
     resolvedSessionKey.value = null;
@@ -199,6 +278,9 @@ export const useChatStore = defineStore("chat", () => {
     chatRunId.value = null;
     streamStartedAt.value = null;
     lastError.value = null;
+
+    const sessionStore = useSessionStore();
+    sessionStore.ensureSession(key);
   }
 
   /** Update last message preview for current session key. */
@@ -208,6 +290,77 @@ export const useChatStore = defineStore("chat", () => {
     if (last) {
       const text = extractText(last) || "";
       lastMessageMap.value[key] = text.replace(/\n/g, " ").slice(0, 80);
+    }
+    _syncToSessionStore();
+  }
+
+  /** Sync current session state to the sessions store. */
+  function _syncToSessionStore() {
+    const key = sessionKey.value;
+    if (!key) return;
+    const sessionStore = useSessionStore();
+    sessionStore.ensureSession(key);
+    // Auto-title from first user message
+    const firstUser = messages.value.find((m) => m.role === "user");
+    if (firstUser) {
+      sessionStore.autoTitle(key, extractText(firstUser) || "");
+    }
+    // Update preview
+    const last = [...messages.value].reverse().find((m) => m.role === "assistant" || m.role === "user");
+    if (last) {
+      sessionStore.updateSession(key, { preview: (extractText(last) || "").replace(/\n/g, " ").slice(0, 80) });
+    }
+  }
+
+  /** Handle a chat event for a background (non-active) session stored in the cache. */
+  function _handleBackgroundEvent(cachedKey: string, cached: SessionStreamState, payload: ChatEventPayload) {
+    if (payload.state === "delta") {
+      const text = extractText(payload.message);
+      if (typeof text === "string") {
+        if (!cached.streamText || text.length >= cached.streamText.length) {
+          cached.streamText = text;
+        }
+      }
+    } else if (payload.state === "final") {
+      const msg = payload.message as ChatMessage | undefined;
+      if (msg) {
+        cached.messages = [...cached.messages, msg];
+      } else if (cached.streamText.trim()) {
+        cached.messages = [
+          ...cached.messages,
+          { role: "assistant", content: [{ type: "text", text: cached.streamText }], timestamp: Date.now() },
+        ];
+      }
+      cached.streaming = false;
+      cached.streamText = "";
+      cached.chatRunId = null;
+      cached.streamStartedAt = null;
+      cached.sending = false;
+      // Keep in cache so switching back restores final messages
+      sessionStateCache.set(cachedKey, cached);
+    } else if (payload.state === "aborted") {
+      const msg = payload.message as ChatMessage | undefined;
+      if (msg) {
+        cached.messages = [...cached.messages, msg];
+      } else if (cached.streamText.trim()) {
+        cached.messages = [
+          ...cached.messages,
+          { role: "assistant", content: [{ type: "text", text: cached.streamText }], timestamp: Date.now() },
+        ];
+      }
+      cached.streaming = false;
+      cached.streamText = "";
+      cached.chatRunId = null;
+      cached.streamStartedAt = null;
+      cached.sending = false;
+      sessionStateCache.set(cachedKey, cached);
+    } else if (payload.state === "error") {
+      cached.streaming = false;
+      cached.streamText = "";
+      cached.chatRunId = null;
+      cached.streamStartedAt = null;
+      cached.sending = false;
+      sessionStateCache.set(cachedKey, cached);
     }
   }
 

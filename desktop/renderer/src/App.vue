@@ -12,9 +12,13 @@ import { onMounted, onUnmounted } from "vue";
 import Sidebar from "@/components/Sidebar.vue";
 import { useGatewayStore } from "@/stores/gateway";
 import { useChatStore } from "@/stores/chat";
+import { useSessionStore } from "@/stores/sessions";
+import { useTaskStore } from "@/stores/tasks";
 
 const gateway = useGatewayStore();
 const chatStore = useChatStore();
+const sessionStore = useSessionStore();
+const taskStore = useTaskStore();
 
 function applyTheme(mode: string) {
   const html = document.documentElement;
@@ -43,10 +47,18 @@ onMounted(() => {
   });
 
   // WebSocket connection status
-  unsubWsConnected = window.openclaw.gateway.onWsConnected(() => {
+  unsubWsConnected = window.openclaw.gateway.onWsConnected((mainSessionKey) => {
     chatStore.wsConnected = true;
-    // Load history for the current session once connected
+    // Apply the canonical session key from gateway hello
+    if (mainSessionKey) {
+      chatStore.sessionKey = mainSessionKey;
+      chatStore.resolvedSessionKey = mainSessionKey;
+    }
+    // Register in session store
+    sessionStore.ensureSession(chatStore.sessionKey);
     chatStore.loadHistory();
+    // Fetch scheduled tasks now that gateway is connected
+    taskStore.fetchTasks();
   });
   unsubWsDisconnected = window.openclaw.gateway.onWsDisconnected(() => {
     chatStore.wsConnected = false;

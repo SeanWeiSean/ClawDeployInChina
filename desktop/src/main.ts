@@ -228,9 +228,13 @@ function connectGatewayWs(): void {
   gwClient = new GatewayClient({
     port: gatewayPort,
     token: gatewayToken,
-    onConnected: () => {
+    onConnected: (hello) => {
       console.log("[gateway-ws] connected");
-      mainWindow?.webContents.send("gateway:ws-connected");
+      // Extract the canonical session key from hello → snapshot → sessionDefaults
+      const snapshot = hello?.snapshot as Record<string, unknown> | undefined;
+      const sessionDefaults = snapshot?.sessionDefaults as Record<string, unknown> | undefined;
+      const mainSessionKey = sessionDefaults?.mainSessionKey as string | undefined;
+      mainWindow?.webContents.send("gateway:ws-connected", mainSessionKey || null);
     },
     onDisconnected: (reason) => {
       console.log(`[gateway-ws] disconnected: ${reason}`);
@@ -289,6 +293,12 @@ function registerIpcHandlers(): void {
   });
 
   ipcMain.handle("chat:is-connected", () => gwClient?.connected ?? false);
+
+  // --- Cron / Scheduled Tasks ---
+  ipcMain.handle("cron:list", async () => {
+    if (!gwClient?.connected) throw new Error("Gateway not connected");
+    return await gwClient.listCronJobs();
+  });
 
   // --- Settings ---
   ipcMain.handle("settings:get", () => settingsStore.store);

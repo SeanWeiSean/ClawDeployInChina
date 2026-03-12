@@ -30,7 +30,7 @@ interface OpenClawAPI {
     restart(): Promise<void>;
     onStatus(callback: (status: string) => void): () => void;
     onLog(callback: (msg: string) => void): () => void;
-    onWsConnected(callback: () => void): () => void;
+    onWsConnected(callback: (mainSessionKey: string | null) => void): () => void;
     onWsDisconnected(callback: (reason: string) => void): () => void;
   };
   config: {
@@ -49,6 +49,9 @@ interface OpenClawAPI {
     loadHistory(sessionKey: string): Promise<{ messages?: unknown[]; thinkingLevel?: string }>;
     abort(sessionKey: string): Promise<void>;
     onEvent(callback: (payload: ChatEventPayload) => void): () => void;
+  };
+  cron: {
+    list(): Promise<{ jobs?: unknown[] }>;
   };
   window: {
     minimize(): Promise<void>;

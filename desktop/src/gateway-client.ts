@@ -46,7 +46,7 @@ export type GatewayClientOptions = {
   port: number;
   token: string;
   onEvent?: (evt: GatewayEventFrame) => void;
-  onConnected?: () => void;
+  onConnected?: (hello: Record<string, unknown>) => void;
   onDisconnected?: (reason: string) => void;
 };
 
@@ -116,6 +116,11 @@ export class GatewayClient {
   /** Abort the current chat run. */
   abortChat(sessionKey: string): Promise<unknown> {
     return this.request("chat.abort", { sessionKey });
+  }
+
+  /** List all cron jobs. */
+  listCronJobs(): Promise<{ jobs?: unknown[] }> {
+    return this.request("cron.list");
   }
 
   // ── Internal ──
@@ -191,10 +196,10 @@ export class GatewayClient {
     }
 
     this.request<Record<string, unknown>>("connect", params)
-      .then(() => {
+      .then((hello) => {
         this._connected = true;
         this.backoffMs = 800;
-        this.opts.onConnected?.();
+        this.opts.onConnected?.(hello ?? {});
       })
       .catch((err) => {
         console.error("[gateway-client] connect handshake failed:", err.message);

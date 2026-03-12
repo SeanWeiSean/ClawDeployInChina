@@ -18,24 +18,29 @@
 
     <!-- Tab content -->
     <div class="sidebar-content">
-      <!-- Agents tab -->
-      <div v-if="activeTab === 'agents'" class="tab-panel">
-        <div class="agent-list">
+      <!-- Sessions tab (default) -->
+      <div v-if="activeTab === 'sessions'" class="tab-panel">
+        <div class="session-list">
           <div
-            v-for="agent in agentStore.agents"
-            :key="agent.id"
+            v-for="s in sessionStore.sortedSessions"
+            :key="s.key"
             class="session-card"
-            :class="{ active: agentStore.currentAgentId === agent.id }"
-            @click="selectAgent(agent.id)"
+            :class="{ active: chatStore.sessionKey === s.key }"
+            @click="selectSession(s.key)"
           >
-            <div class="session-avatar">{{ agent.name.charAt(0) }}</div>
+            <div class="session-avatar">{{ s.title.charAt(0) }}</div>
             <div class="session-info">
-              <div class="session-name">{{ agent.name }}</div>
-              <div class="session-preview">{{ chatStore.lastMessageMap[agent.id] || '暂无消息' }}</div>
+              <div class="session-name">{{ s.title }}</div>
+              <div class="session-preview">{{ s.preview || '暂无消息' }}</div>
             </div>
+            <button
+              class="session-delete-btn"
+              @click.stop="deleteSession(s.key)"
+              title="删除会话"
+            >&times;</button>
           </div>
-          <div v-if="agentStore.agents.length === 0" class="empty-hint">
-            等待 Gateway 启动...
+          <div v-if="sessionStore.sessions.length === 0" class="empty-hint">
+            点击上方按钮开始新对话
           </div>
         </div>
       </div>
@@ -100,6 +105,7 @@ import { useChannelStore } from "@/stores/channels";
 import { useTaskStore } from "@/stores/tasks";
 import { useGatewayStore } from "@/stores/gateway";
 import { useChatStore } from "@/stores/chat";
+import { useSessionStore } from "@/stores/sessions";
 
 const router = useRouter();
 const agentStore = useAgentStore();
@@ -107,14 +113,15 @@ const channelStore = useChannelStore();
 const taskStore = useTaskStore();
 const gateway = useGatewayStore();
 const chatStore = useChatStore();
+const sessionStore = useSessionStore();
 
 const tabs = [
-  { id: "agents", icon: "智", label: "智能体" },
+  { id: "sessions", icon: "对", label: "对话" },
   { id: "channels", icon: "频", label: "消息频道" },
   { id: "tasks", icon: "时", label: "定时任务" },
 ];
 
-const activeTab = ref("agents");
+const activeTab = ref("sessions");
 
 const gatewayStatusClass = computed(() => ({
   running: gateway.status === "running",
@@ -138,6 +145,28 @@ const gatewayStatusLabel = computed(() => {
 function selectAgent(agentId: string) {
   agentStore.currentAgentId = agentId;
   router.push(`/chat/${agentId}`);
+}
+
+function selectSession(key: string) {
+  chatStore.switchSession(key);
+  router.push("/chat");
+}
+
+function createNewSession() {
+  chatStore.newSession();
+  router.push("/chat");
+}
+
+function deleteSession(key: string) {
+  sessionStore.removeSession(key);
+  // If deleting the current session, create a new one
+  if (chatStore.sessionKey === key) {
+    if (sessionStore.sessions.length > 0) {
+      chatStore.switchSession(sessionStore.sortedSessions[0].key);
+    } else {
+      chatStore.newSession();
+    }
+  }
 }
 </script>
 
@@ -190,6 +219,56 @@ function selectAgent(agentId: string) {
   color: var(--text-primary);
   box-shadow: 0 1px 3px rgba(0, 0, 0, 0.08), 0 1px 2px rgba(0, 0, 0, 0.06);
   font-weight: 600;
+}
+
+/* Session list header */
+.session-list-header {
+  padding: 10px 14px 6px;
+  display: flex;
+  justify-content: flex-end;
+}
+
+.new-session-btn {
+  padding: 5px 12px;
+  border: none;
+  border-radius: 6px;
+  background: var(--accent);
+  color: #fff;
+  cursor: pointer;
+  font-size: 12px;
+  font-weight: 500;
+  transition: opacity 0.15s;
+}
+
+.new-session-btn:hover {
+  opacity: 0.85;
+}
+
+.session-list {
+  flex: 1;
+  overflow-y: auto;
+}
+
+.session-delete-btn {
+  display: none;
+  padding: 0 4px;
+  border: none;
+  background: transparent;
+  color: var(--text-muted);
+  font-size: 16px;
+  cursor: pointer;
+  border-radius: 4px;
+  line-height: 1;
+  flex-shrink: 0;
+}
+
+.session-delete-btn:hover {
+  color: var(--danger);
+  background: var(--bg-tertiary);
+}
+
+.session-card:hover .session-delete-btn {
+  display: block;
 }
 
 /* Content */

@@ -79,7 +79,7 @@
         </div>
 
         <!-- Built-in Models -->
-        <div class="sub-label">Built-in Models</div>
+        <div class="sub-label">MAI Models</div>
         <div class="card-group">
           <div
             v-for="m in builtinModels"
@@ -87,8 +87,7 @@
             class="card-row no-border"
           >
             <span class="row-label">{{ m.name }}</span>
-            <span v-if="m.id === selectedModel" class="badge badge-green">Current Selection</span>
-            <el-button v-else size="small" @click="selectModel(m.id)">Select</el-button>
+            <span class="badge badge-green">Current Selection</span>
           </div>
         </div>
 
@@ -107,7 +106,7 @@
             >
               <div class="custom-model-info">
                 <span class="row-label">{{ m.name }}</span>
-                <span class="row-sub">{{ m.baseUrl }}</span>
+                <span class="row-sub">{{ m.baseUrl }} · {{ m.apiFormat === 'anthropic' ? 'Anthropic' : 'OpenAI' }}</span>
               </div>
               <div class="custom-model-actions">
                 <span v-if="m.id === selectedModel" class="badge badge-green">Current Selection</span>
@@ -122,7 +121,7 @@
         </div>
 
         <!-- Add Custom Model dialog -->
-        <el-dialog v-model="showAddModel" title="Add Custom Model" width="420px" :close-on-click-modal="false">
+        <el-dialog v-model="showAddModel" title="Add Custom Model" width="460px" :close-on-click-modal="false">
           <el-form label-position="top" @submit.prevent>
             <el-form-item label="Model Name">
               <el-input v-model="newModel.name" placeholder="e.g. my-gpt-4o" />
@@ -133,15 +132,29 @@
             <el-form-item label="API Key">
               <el-input v-model="newModel.apiKey" type="password" show-password placeholder="sk-..." />
             </el-form-item>
+            <el-form-item label="API Format">
+              <el-radio-group v-model="newModel.apiFormat">
+                <el-radio value="openai">Chat/Completion (OpenAI)</el-radio>
+                <el-radio value="anthropic">Anthropic</el-radio>
+              </el-radio-group>
+            </el-form-item>
           </el-form>
+          <div class="test-result" v-if="testResult">
+            <span :class="testResult.ok ? 'test-ok' : 'test-fail'">{{ testResult.message }}</span>
+          </div>
           <template #footer>
-            <el-button @click="showAddModel = false">Cancel</el-button>
-            <el-button type="primary" @click="addCustomModel">Add</el-button>
+            <div style="display:flex;justify-content:space-between;width:100%">
+              <el-button :loading="testLoading" @click="testCustomModel">Test Connection</el-button>
+              <div style="display:flex;gap:8px">
+                <el-button @click="showAddModel = false">Cancel</el-button>
+                <el-button type="primary" @click="addCustomModel">Add</el-button>
+              </div>
+            </div>
           </template>
         </el-dialog>
 
         <!-- Gateway URL -->
-        <div class="sub-label-row" style="margin-top: 28px">
+        <div class="sub-label-row" style="margin-top: 40px">
           <div style="display:flex;align-items:center;gap:8px">
             <span class="sub-label" style="margin-bottom:0">Gateway URL</span>
             <span class="badge" :class="gateway.status === 'running' ? 'badge-green' : 'badge-red'">
@@ -155,7 +168,7 @@
         </div>
 
         <!-- Port -->
-        <div class="card-group" style="margin-top: 12px">
+        <div class="card-group" style="margin-top: 14px">
           <div class="card-row no-border port-row">
             <div class="port-info">
               <div class="port-title">Port</div>
@@ -255,6 +268,7 @@ interface ModelEntry {
   name: string;
   baseUrl?: string;
   apiKey?: string;
+  apiFormat?: 'openai' | 'anthropic';
 }
 
 const builtinModels = ref<ModelEntry[]>([
@@ -264,7 +278,9 @@ const customModels = ref<ModelEntry[]>([]);
 const selectedModel = ref("Pony-Alpha-2");
 const gatewayPort = ref("18789");
 const showAddModel = ref(false);
-const newModel = reactive({ name: "", baseUrl: "", apiKey: "" });
+const newModel = reactive({ name: "", baseUrl: "", apiKey: "", apiFormat: "openai" as 'openai' | 'anthropic' });
+const testLoading = ref(false);
+const testResult = ref<{ ok: boolean; message: string } | null>(null);
 
 const svg = {
   general: `<svg viewBox="0 0 20 20" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round"><circle cx="10" cy="10" r="2.5"/><path d="M10 2v2M10 16v2M2 10h2M16 10h2M4.22 4.22l1.42 1.42M14.36 14.36l1.42 1.42M4.22 15.78l1.42-1.42M14.36 5.64l1.42-1.42"/></svg>`,
@@ -360,6 +376,7 @@ onMounted(async () => {
           name: m.name ?? m.id ?? key,
           baseUrl: val.baseUrl ?? "",
           apiKey: val.apiKey ?? "",
+          apiFormat: val.api === 'anthropic' ? 'anthropic' : 'openai',
         });
       }
     }
@@ -378,7 +395,7 @@ async function persistModelsConfig() {
     providerConfig[key] = {
       baseUrl: m.baseUrl || "",
       apiKey: m.apiKey || "",
-      api: "openai-chat",
+      api: m.apiFormat === 'anthropic' ? 'anthropic' : 'openai-chat',
       models: [{ id: m.id, name: m.name }],
     };
   }
@@ -410,11 +427,14 @@ async function addCustomModel() {
     name,
     baseUrl: newModel.baseUrl.trim(),
     apiKey: newModel.apiKey.trim(),
+    apiFormat: newModel.apiFormat,
   });
   showAddModel.value = false;
   newModel.name = "";
   newModel.baseUrl = "";
   newModel.apiKey = "";
+  newModel.apiFormat = "openai";
+  testResult.value = null;
   try {
     await persistModelsConfig();
     ElMessage.success("Custom model added");
@@ -434,6 +454,50 @@ async function removeCustomModel(idx: number) {
     ElMessage.success("Custom model removed");
   } catch (err: any) {
     ElMessage.error("Failed: " + err.message);
+  }
+}
+
+async function testCustomModel() {
+  const baseUrl = newModel.baseUrl.trim();
+  const apiKey = newModel.apiKey.trim();
+  if (!baseUrl) { ElMessage.warning("Base URL is required"); return; }
+  testLoading.value = true;
+  testResult.value = null;
+  try {
+    if (newModel.apiFormat === 'anthropic') {
+      const res = await fetch(baseUrl.replace(/\/$/, '') + '/v1/messages', {
+        method: 'POST',
+        headers: {
+          'Content-Type': 'application/json',
+          'x-api-key': apiKey,
+          'anthropic-version': '2023-06-01',
+        },
+        body: JSON.stringify({ model: newModel.name.trim() || 'claude-3-haiku-20240307', max_tokens: 1, messages: [{ role: 'user', content: 'hi' }] }),
+      });
+      if (res.ok || res.status === 400) {
+        testResult.value = { ok: true, message: 'Connection successful (Anthropic)' };
+      } else {
+        testResult.value = { ok: false, message: `Failed: HTTP ${res.status} ${res.statusText}` };
+      }
+    } else {
+      const url = baseUrl.replace(/\/$/, '') + '/chat/completions';
+      const headers: Record<string, string> = { 'Content-Type': 'application/json' };
+      if (apiKey) headers['Authorization'] = `Bearer ${apiKey}`;
+      const res = await fetch(url, {
+        method: 'POST',
+        headers,
+        body: JSON.stringify({ model: newModel.name.trim() || 'gpt-4o', max_tokens: 1, messages: [{ role: 'user', content: 'hi' }] }),
+      });
+      if (res.ok || res.status === 400) {
+        testResult.value = { ok: true, message: 'Connection successful (OpenAI)' };
+      } else {
+        testResult.value = { ok: false, message: `Failed: HTTP ${res.status} ${res.statusText}` };
+      }
+    }
+  } catch (err: any) {
+    testResult.value = { ok: false, message: 'Connection failed: ' + (err.message || 'Network error') };
+  } finally {
+    testLoading.value = false;
   }
 }
 
@@ -599,10 +663,10 @@ async function clearChatHistory() {
   display: flex;
   align-items: center;
   justify-content: space-between;
-  padding: 11px 16px;
+  padding: 14px 16px;
   border-bottom: 1px solid var(--border-row);
   gap: 12px;
-  min-height: 44px;
+  min-height: 52px;
 }
 
 .card-row.no-border {
@@ -682,7 +746,7 @@ async function clearChatHistory() {
   display: flex;
   align-items: center;
   justify-content: space-between;
-  margin-bottom: 20px;
+  margin-bottom: 28px;
 }
 
 .section-header-title {
@@ -696,16 +760,16 @@ async function clearChatHistory() {
   font-size: 13px;
   font-weight: 600;
   color: var(--text-primary);
-  margin-bottom: 8px;
-  margin-top: 20px;
+  margin-bottom: 10px;
+  margin-top: 32px;
 }
 
 .sub-label-row {
   display: flex;
   align-items: center;
   justify-content: space-between;
-  margin-top: 20px;
-  margin-bottom: 8px;
+  margin-top: 32px;
+  margin-bottom: 10px;
 }
 
 .badge {
@@ -754,8 +818,9 @@ async function clearChatHistory() {
 
 .port-row {
   align-items: flex-start;
-  padding: 16px;
-  gap: 20px;
+  padding: 20px;
+  gap: 24px;
+  min-height: 80px;
 }
 
 .port-info {
@@ -803,5 +868,21 @@ async function clearChatHistory() {
   font-size: 13px;
   text-align: center;
   font-weight: 600;
+}
+
+.test-result {
+  margin-top: 8px;
+  padding: 8px 12px;
+  border-radius: 8px;
+  background: var(--bg-grouped);
+  font-size: 13px;
+}
+
+.test-ok {
+  color: #34c759;
+}
+
+.test-fail {
+  color: #ff3b30;
 }
 </style>

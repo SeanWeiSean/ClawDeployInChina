@@ -17,8 +17,8 @@ contextBridge.exposeInMainWorld("openclaw", {
       ipcRenderer.on("gateway:log", handler);
       return () => ipcRenderer.removeListener("gateway:log", handler);
     },
-    onWsConnected: (callback: () => void) => {
-      const handler = () => callback();
+    onWsConnected: (callback: (mainSessionKey: string | null) => void) => {
+      const handler = (_event: any, key: string | null) => callback(key);
       ipcRenderer.on("gateway:ws-connected", handler);
       return () => ipcRenderer.removeListener("gateway:ws-connected", handler);
     },
@@ -75,6 +75,11 @@ contextBridge.exposeInMainWorld("openclaw", {
       ipcRenderer.on("chat:event", handler);
       return () => ipcRenderer.removeListener("chat:event", handler);
     },
+  },
+
+  // --- Cron / Scheduled Tasks ---
+  cron: {
+    list: () => ipcRenderer.invoke("cron:list"),
   },
 
   // --- Window ---
