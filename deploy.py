@@ -192,13 +192,14 @@ class DeployerApp(tk.Tk):
         steps = [
             (5,  "检查 Git…",           ws.ensure_git),
             (15, "检查 Node.js…",       ws.check_node_windows),
-            (30, "安装 Node.js…",       ws.install_node_windows),
-            (40, "配置 npm 镜像…",      ws.setup_npm_mirror),
-            (55, "安装 OpenClaw…",      ws.install_openclaw_windows),
-            (65, "配置系统 PATH…",      ws.add_to_path),
-            (75, "写入配置文件…",       ws.write_config),
-            (82, "安装网关服务…",       ws.run_onboard),
-            (90, "启动网关…",           ws.start_gateway),
+            (28, "安装 Node.js…",       ws.install_node_windows),
+            (38, "配置 npm 镜像…",      ws.setup_npm_mirror),
+            (50, "安装 OpenClaw…",      ws.install_openclaw_windows),
+            (60, "配置系统 PATH…",      ws.add_to_path),
+            (68, "写入配置文件…",       ws.write_config),
+            (75, "安装网关服务…",       ws.run_onboard),
+            (82, "启动网关…",           ws.start_gateway),
+            (88, "安装桌面客户端…",     ws.install_desktop_client),
             (95, "创建桌面快捷方式…",   ws.create_desktop_shortcut),
             (97, "验证安装…",           self._verify),
         ]
@@ -213,11 +214,18 @@ class DeployerApp(tk.Tk):
         except Exception:
             pass
 
+        def _abort(pct: int, msg: str):
+            self._set_progress(pct, "安装失败，正在清理…")
+            ws.rollback()
+            self._finish_fail(msg + "（已清理）")
+            self._running = False
+
         node_ok = False
         for pct, label, fn in steps:
             if not self._running:
-                self._set_progress(pct, "已取消")
-                self.after(0, lambda: self._finish_fail("用户取消安装"))
+                self._set_progress(pct, "已取消，正在清理…")
+                ws.rollback()
+                self.after(0, lambda: self._finish_fail("用户取消安装（已清理）"))
                 self._running = False
                 return
 
@@ -241,15 +249,13 @@ class DeployerApp(tk.Tk):
                     node_ok = bool(result)
                     continue  # Don't fail if node not found — we'll install next
 
-                if not result and fn not in (ws.check_node_windows, ws.run_onboard):
-                    self._finish_fail(label.replace("…", "") + " 失败")
-                    self._running = False
+                if not result and fn not in (ws.check_node_windows, ws.run_onboard, ws.install_desktop_client):
+                    _abort(pct, label.replace("…", "") + " 失败")
                     return
             except Exception as e:
                 log.error(f"{label} exception: {e}")
-                if fn not in (ws.check_node_windows, ws.run_onboard):
-                    self._finish_fail(label.replace("…", "") + " 失败")
-                    self._running = False
+                if fn not in (ws.check_node_windows, ws.run_onboard, ws.install_desktop_client):
+                    _abort(pct, label.replace("…", "") + " 失败")
                     return
 
         self._running = False

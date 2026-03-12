@@ -63,6 +63,12 @@ interface OpenClawAPI {
   cron: {
     list(): Promise<{ jobs?: unknown[] }>;
   };
+  agents: {
+    list(): Promise<{ agents?: { id: string; name: string; description?: string }[] }>;
+  };
+  channels: {
+    list(): Promise<{ channels?: { id: string; name: string; icon: string; type: string; connected: boolean }[] }>;
+  };
   window: {
     minimize(): Promise<void>;
     maximize(): Promise<void>;

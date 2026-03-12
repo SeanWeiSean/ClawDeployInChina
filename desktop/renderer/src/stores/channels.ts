@@ -13,7 +13,14 @@ export const useChannelStore = defineStore("channels", () => {
   const channels = ref<Channel[]>([]);
 
   async function fetchChannels() {
-    // TODO: Fetch from gateway via tools API
+    try {
+      const result = await window.openclaw.channels.list();
+      if (result.channels) {
+        channels.value = result.channels as Channel[];
+      }
+    } catch {
+      // Gateway may not support channels.list yet — keep empty
+    }
   }
 
   return { channels, fetchChannels };

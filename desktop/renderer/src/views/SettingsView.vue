@@ -63,12 +63,108 @@
       <!-- Usage -->
       <div v-if="activeSection === 'usage'" class="section">
         <div class="section-label">用量</div>
-        <div class="card-group">
+
+        <!-- Loading / Error states -->
+        <div v-if="usageLoading" class="card-group">
           <div class="card-row no-border placeholder-row">
-            <span class="placeholder-text">API 调用和 Token 用量统计将在这里显示。</span>
+            <span class="placeholder-text">正在加载用量数据…</span>
           </div>
         </div>
-        <div class="section-footer">需要 Gateway 运行中才能获取数据。</div>
+        <div v-else-if="usageError" class="card-group">
+          <div class="card-row no-border placeholder-row">
+            <span class="placeholder-text" style="color: var(--text-muted)">{{ usageError }}</span>
+          </div>
+          <div class="card-row no-border" style="justify-content: center; padding-top: 0">
+            <el-button size="small" @click="loadUsage">重试</el-button>
+          </div>
+        </div>
+
+        <!-- Data loaded -->
+        <template v-else-if="usageData">
+          <!-- Spend overview -->
+          <div class="card-group">
+            <div class="card-row" :class="{ 'no-border': !usageData.maxBudget }">
+              <span class="row-label">总花费</span>
+              <span class="row-value usage-spend">${{ usageData.totalSpend.toFixed(4) }}</span>
+            </div>
+            <div v-if="usageData.maxBudget" class="card-row no-border">
+              <span class="row-label">预算</span>
+              <div class="budget-bar-wrapper">
+                <span class="row-value">${{ usageData.totalSpend.toFixed(2) }} / ${{ usageData.maxBudget.toFixed(2) }}</span>
+                <div class="budget-bar">
+                  <div class="budget-bar-fill" :style="{ width: Math.min(100, (usageData.totalSpend / usageData.maxBudget) * 100) + '%' }"></div>
+                </div>
+              </div>
+            </div>
+          </div>
+
+          <!-- Token usage (from detailed logs) -->
+          <template v-if="usageData.hasDetailedLogs">
+            <div class="sub-label">Token 用量（近 30 天）</div>
+            <div class="card-group">
+              <div class="card-row">
+                <span class="row-label">API 调用次数</span>
+                <span class="row-value">{{ usageData.totalRequests.toLocaleString() }}</span>
+              </div>
+              <div class="card-row">
+                <span class="row-label">输入 Tokens</span>
+                <span class="row-value">{{ usageData.totalPromptTokens.toLocaleString() }}</span>
+              </div>
+              <div class="card-row">
+                <span class="row-label">输出 Tokens</span>
+                <span class="row-value">{{ usageData.totalCompletionTokens.toLocaleString() }}</span>
+              </div>
+              <div class="card-row no-border">
+                <span class="row-label">总 Tokens</span>
+                <span class="row-value">{{ usageData.totalTokens.toLocaleString() }}</span>
+              </div>
+            </div>
+          </template>
+
+          <!-- Per-model breakdown -->
+          <template v-if="usageModelList.length">
+            <div class="sub-label">模型用量明细</div>
+            <div class="card-group">
+              <div
+                v-for="(m, idx) in usageModelList"
+                :key="m.name"
+                class="card-row"
+                :class="{ 'no-border': idx === usageModelList.length - 1 }"
+              >
+                <div class="model-usage-info">
+                  <span class="row-label">{{ m.name }}</span>
+                  <span class="row-sub" v-if="m.requests">{{ m.requests }} 次调用 · {{ m.promptTokens.toLocaleString() }} 输入 · {{ m.completionTokens.toLocaleString() }} 输出</span>
+                </div>
+                <span class="row-value usage-spend">${{ m.spend.toFixed(4) }}</span>
+              </div>
+            </div>
+          </template>
+
+          <!-- Key info -->
+          <template v-if="usageData.keyName || usageData.budgetDuration">
+            <div class="sub-label">Key 信息</div>
+            <div class="card-group">
+              <div v-if="usageData.keyName" class="card-row" :class="{ 'no-border': !usageData.budgetDuration }">
+                <span class="row-label">Key 名称</span>
+                <span class="row-value">{{ usageData.keyName }}</span>
+              </div>
+              <div v-if="usageData.budgetDuration" class="card-row" :class="{ 'no-border': !usageData.budgetResetAt }">
+                <span class="row-label">预算周期</span>
+                <span class="row-value">{{ usageData.budgetDuration }}</span>
+              </div>
+              <div v-if="usageData.budgetResetAt" class="card-row no-border">
+                <span class="row-label">预算重置时间</span>
+                <span class="row-value">{{ new Date(usageData.budgetResetAt).toLocaleString() }}</span>
+              </div>
+            </div>
+          </template>
+
+          <div class="section-actions">
+            <el-button size="small" @click="loadUsage" :loading="usageLoading">刷新</el-button>
+          </div>
+        </template>
+
+        <div class="section-footer">数据来源于 LiteLLM Proxy，需要 Gateway 运行中。</div>
       </div>
 
       <!-- Models & API -->
@@ -76,19 +172,6 @@
         <div class="section-header">
           <div class="section-header-title">Models & API</div>
           <el-button size="small" @click="reconnectGateway">Reconnect</el-button>
-        </div>
-
-        <!-- Built-in Models -->
-        <div class="sub-label">MAI Models</div>
-        <div class="card-group">
-          <div
-            v-for="m in builtinModels"
-            :key="m.id"
-            class="card-row no-border"
-          >
-            <span class="row-label">{{ m.name }}</span>
-            <span class="badge badge-green">Current Selection</span>
-          </div>
         </div>
 
         <!-- Custom Models -->
@@ -282,7 +365,7 @@
 </template>
 
 <script setup lang="ts">
-import { ref, reactive, onMounted, watch } from "vue";
+import { ref, reactive, onMounted, watch, computed } from "vue";
 import { useGatewayStore } from "@/stores/gateway";
 import { useChatStore } from "@/stores/chat";
 import { ElMessage, ElMessageBox } from "element-plus";
@@ -297,7 +380,7 @@ const settings = reactive({
   language: "zh-CN",
   autoStart: false,
   startMinimized: false,
-  themeMode: "dark",
+  themeMode: "light",
   accentColor: "#4a90d9",
 });
 
@@ -311,7 +394,7 @@ interface ModelEntry {
 }
 
 const builtinModels = ref<ModelEntry[]>([
-  { id: "Pony-Alpha-2", name: "Pony-Alpha-2" },
+  { id: "MAI-01-Preview", name: "MAI-01-Preview" },
 ]);
 const customModels = ref<ModelEntry[]>([]);
 const selectedModel = ref("Pony-Alpha-2");
@@ -323,6 +406,60 @@ const testResult = ref<{ ok: boolean; message: string } | null>(null);
 
 const builtinSkills = ref<{ id: string; name: string; description: string }[]>([]);
 const customSkills = ref<{ id: string; name: string; description: string }[]>([]);
+
+// --- Usage state ---
+interface UsageStats {
+  totalSpend: number;
+  maxBudget: number | null;
+  modelSpend: Record<string, number>;
+  keyName: string;
+  budgetDuration: string | null;
+  budgetResetAt: string | null;
+  totalPromptTokens: number;
+  totalCompletionTokens: number;
+  totalTokens: number;
+  totalRequests: number;
+  modelBreakdown: Record<string, { requests: number; promptTokens: number; completionTokens: number; spend: number }>;
+  dailySpend: Record<string, number>;
+  hasDetailedLogs: boolean;
+}
+const usageData = ref<UsageStats | null>(null);
+const usageLoading = ref(false);
+const usageError = ref("");
+
+const usageModelList = computed(() => {
+  if (!usageData.value) return [];
+  // Use detailed breakdown if available, otherwise fall back to modelSpend
+  if (usageData.value.hasDetailedLogs && Object.keys(usageData.value.modelBreakdown).length) {
+    return Object.entries(usageData.value.modelBreakdown).map(([name, d]) => ({
+      name,
+      requests: d.requests,
+      promptTokens: d.promptTokens,
+      completionTokens: d.completionTokens,
+      spend: d.spend,
+    }));
+  }
+  return Object.entries(usageData.value.modelSpend).map(([name, spend]) => ({
+    name,
+    requests: 0,
+    promptTokens: 0,
+    completionTokens: 0,
+    spend,
+  }));
+});
+
+async function loadUsage() {
+  usageLoading.value = true;
+  usageError.value = "";
+  try {
+    usageData.value = await (window as any).openclaw.usage.getStats();
+  } catch (err: any) {
+    usageError.value = err.message || "获取用量数据失败";
+    usageData.value = null;
+  } finally {
+    usageLoading.value = false;
+  }
+}
 
 const svg = {
   general: `<svg viewBox="0 0 20 20" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round"><circle cx="10" cy="10" r="2.5"/><path d="M10 2v2M10 16v2M2 10h2M16 10h2M4.22 4.22l1.42 1.42M14.36 14.36l1.42 1.42M4.22 15.78l1.42-1.42M14.36 5.64l1.42-1.42"/></svg>`,
@@ -384,6 +521,13 @@ watch(() => settings.accentColor, (v) => {
   }
 });
 
+// --- Auto-load usage data when tab is selected ---
+watch(activeSection, (v) => {
+  if (v === "usage" && !usageData.value && !usageLoading.value) {
+    loadUsage();
+  }
+});
+
 onMounted(async () => {
   stateDir.value = await window.openclaw.config.getStateDir();
 
@@ -393,7 +537,7 @@ onMounted(async () => {
     settings.language = saved.language ?? "zh-CN";
     settings.autoStart = saved.autoStart ?? false;
     settings.startMinimized = saved.startMinimized ?? false;
-    settings.themeMode = saved.themeMode ?? "dark";
+    settings.themeMode = saved.themeMode ?? "light";
     settings.accentColor = saved.accentColor ?? "#4a90d9";
   }
 
@@ -438,6 +582,16 @@ onMounted(async () => {
 // --- Model & Gateway actions ---
 
 async function persistModelsConfig() {
+  // Validate custom models before saving
+  for (const m of customModels.value) {
+    if (!m.id || !m.id.trim()) {
+      throw new Error("模型 ID 不能为空");
+    }
+    if (m.baseUrl !== undefined && m.baseUrl !== "" && !/^https?:\/\/.+/.test(m.baseUrl)) {
+      throw new Error(`模型 "${m.name}" 的 Base URL 格式无效`);
+    }
+  }
+
   const config = (await window.openclaw.config.read()) || {};
   const providerConfig: Record<string, any> = {};
 
@@ -459,24 +613,35 @@ async function persistModelsConfig() {
   await window.openclaw.config.write(config);
 }
 
-async function selectModel(id: string) {
-  selectedModel.value = id;
+async function persistAndRestart(successMsg: string) {
   try {
     await persistModelsConfig();
-    await window.openclaw.gateway.restart();
-    ElMessage.success("Model switched to " + id);
   } catch (err: any) {
-    ElMessage.error("Failed: " + err.message);
+    ElMessage.error("配置保存失败: " + (err.message || err));
+    return;
   }
+  try {
+    await window.openclaw.gateway.restart();
+    ElMessage.success(successMsg + "，网关正在重启…");
+  } catch (err: any) {
+    ElMessage.warning("配置已保存，但网关重启失败: " + (err.message || err));
+  }
+}
+
+async function selectModel(id: string) {
+  selectedModel.value = id;
+  await persistAndRestart("模型已切换为 " + id);
 }
 
 async function addCustomModel() {
   const name = newModel.name.trim();
   if (!name) { ElMessage.warning("Model name is required"); return; }
+  const baseUrl = newModel.baseUrl.trim();
+  if (!baseUrl) { ElMessage.warning("Base URL is required"); return; }
   customModels.value.push({
     id: name,
     name,
-    baseUrl: newModel.baseUrl.trim(),
+    baseUrl,
     apiKey: newModel.apiKey.trim(),
     apiFormat: newModel.apiFormat,
   });
@@ -486,12 +651,7 @@ async function addCustomModel() {
   newModel.apiKey = "";
   newModel.apiFormat = "openai";
   testResult.value = null;
-  try {
-    await persistModelsConfig();
-    ElMessage.success("Custom model added");
-  } catch (err: any) {
-    ElMessage.error("Failed: " + err.message);
-  }
+  await persistAndRestart("自定义模型已添加");
 }
 
 async function removeCustomModel(idx: number) {
@@ -500,12 +660,7 @@ async function removeCustomModel(idx: number) {
   if (removed.id === selectedModel.value && builtinModels.value.length) {
     selectedModel.value = builtinModels.value[0].id;
   }
-  try {
-    await persistModelsConfig();
-    ElMessage.success("Custom model removed");
-  } catch (err: any) {
-    ElMessage.error("Failed: " + err.message);
-  }
+  await persistAndRestart("自定义模型已删除");
 }
 
 async function testCustomModel() {
@@ -957,5 +1112,48 @@ async function clearChatHistory() {
   background: rgba(0, 122, 255, 0.12);
   color: #007aff;
   border: 1px solid rgba(0, 122, 255, 0.25);
+}
+
+/* Usage section */
+.usage-spend {
+  font-weight: 600;
+  font-variant-numeric: tabular-nums;
+  color: var(--text-primary);
+}
+
+.budget-bar-wrapper {
+  display: flex;
+  flex-direction: column;
+  align-items: flex-end;
+  gap: 6px;
+  min-width: 180px;
+}
+
+.budget-bar {
+  width: 100%;
+  height: 6px;
+  background: var(--border);
+  border-radius: 3px;
+  overflow: hidden;
+}
+
+.budget-bar-fill {
+  height: 100%;
+  background: var(--accent, #4a90d9);
+  border-radius: 3px;
+  transition: width 0.3s ease;
+}
+
+.model-usage-info {
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+  min-width: 0;
+  flex: 1;
+}
+
+.model-usage-info .row-sub {
+  font-size: 12px;
+  color: var(--text-muted);
 }
 </style>

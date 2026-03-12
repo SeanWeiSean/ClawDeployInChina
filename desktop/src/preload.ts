@@ -87,6 +87,21 @@ contextBridge.exposeInMainWorld("openclaw", {
     list: () => ipcRenderer.invoke("cron:list"),
   },
 
+  // --- Agents ---
+  agents: {
+    list: () => ipcRenderer.invoke("agents:list"),
+  },
+
+  // --- Channels ---
+  channels: {
+    list: () => ipcRenderer.invoke("channels:list"),
+  },
+
+  // --- Usage ---
+  usage: {
+    getStats: () => ipcRenderer.invoke("usage:get-stats"),
+  },
+
   // --- Window ---
   window: {
     minimize: () => ipcRenderer.invoke("window:minimize"),

@@ -42,7 +42,7 @@ const settingsStore = new Store<{
     language: 'zh-CN',
     autoStart: false,
     startMinimized: false,
-    themeMode: 'dark',
+    themeMode: 'light',
     accentColor: '#4a90d9',
   },
 });
@@ -330,6 +330,128 @@ function registerIpcHandlers(): void {
   ipcMain.handle("cron:list", async () => {
     if (!gwClient?.connected) throw new Error("Gateway not connected");
     return await gwClient.listCronJobs();
+  });
+
+  // --- Agents ---
+  ipcMain.handle("agents:list", async () => {
+    if (!gwClient?.connected) return { agents: [] };
+    try {
+      return await gwClient.listAgents();
+    } catch (err) {
+      console.warn("[agents:list] failed:", err);
+      return { agents: [] };
+    }
+  });
+
+  // --- Channels ---
+  ipcMain.handle("channels:list", async () => {
+    if (!gwClient?.connected) return { channels: [] };
+    try {
+      return await gwClient.listChannels();
+    } catch (err) {
+      console.warn("[channels:list] failed:", err);
+      return { channels: [] };
+    }
+  });
+
+  // --- Usage (LiteLLM spend) ---
+  ipcMain.handle("usage:get-stats", async () => {
+    const config = readConfig();
+    if (!config) throw new Error("配置文件未找到");
+
+    // Get LiteLLM proxy base URL from config providers
+    const providers = config?.models?.providers || {};
+    const litellm = providers.litellm || (Object.values(providers)[0] as any);
+    if (!litellm?.baseUrl) throw new Error("模型提供商未配置");
+    let baseUrl: string = litellm.baseUrl;
+    if (baseUrl.endsWith("/v1")) baseUrl = baseUrl.slice(0, -3);
+    baseUrl = baseUrl.replace(/\/$/, "");
+
+    // Get API key from .env file in state dir
+    let apiKey = "";
+    const envPath = path.join(getOpenClawStateDir(), ".env");
+    if (fs.existsSync(envPath)) {
+      const envContent = fs.readFileSync(envPath, "utf-8");
+      const match = envContent.match(/LITELLM_API_KEY=(.+)/);
+      if (match) apiKey = match[1].trim();
+    }
+    if (!apiKey) apiKey = process.env.LITELLM_API_KEY || "";
+    if (!apiKey) throw new Error("API Key 未找到");
+
+    // Query /key/info for spend summary
+    const keyInfoRes = await fetch(`${baseUrl}/key/info`, {
+      headers: { "Authorization": `Bearer ${apiKey}` },
+    });
+    if (!keyInfoRes.ok) {
+      throw new Error(`LiteLLM API 错误: ${keyInfoRes.status} ${keyInfoRes.statusText}`);
+    }
+    const keyInfo = (await keyInfoRes.json()) as any;
+    const info = keyInfo.info || keyInfo;
+
+    // Try to get detailed spend logs (last 30 days)
+    let logs: any[] = [];
+    try {
+      const endDate = new Date().toISOString().split("T")[0];
+      const startDate = new Date(Date.now() - 30 * 86400000).toISOString().split("T")[0];
+      const logsRes = await fetch(
+        `${baseUrl}/spend/logs?start_date=${encodeURIComponent(startDate)}&end_date=${encodeURIComponent(endDate)}&api_key=${encodeURIComponent(apiKey)}`,
+        { headers: { "Authorization": `Bearer ${apiKey}` } }
+      );
+      if (logsRes.ok) {
+        const body = await logsRes.json();
+        logs = Array.isArray(body) ? body : [];
+      }
+    } catch {
+      // Detailed logs may not be available
+    }
+
+    // Aggregate from key info
+    const totalSpend = info.spend || 0;
+    const maxBudget = info.max_budget ?? null;
+    const modelSpend: Record<string, number> = info.model_spend || {};
+    const keyName = info.key_name || info.key_alias || "";
+    const budgetDuration = info.budget_duration || null;
+    const budgetResetAt = info.budget_reset_at || null;
+
+    // Aggregate from detailed logs
+    let totalPromptTokens = 0;
+    let totalCompletionTokens = 0;
+    const totalRequests = logs.length;
+    const dailySpend: Record<string, number> = {};
+    const modelBreakdown: Record<string, { requests: number; promptTokens: number; completionTokens: number; spend: number }> = {};
+
+    for (const entry of logs) {
+      totalPromptTokens += entry.prompt_tokens || 0;
+      totalCompletionTokens += entry.completion_tokens || 0;
+      const model = entry.model || "unknown";
+      if (!modelBreakdown[model]) {
+        modelBreakdown[model] = { requests: 0, promptTokens: 0, completionTokens: 0, spend: 0 };
+      }
+      modelBreakdown[model].requests++;
+      modelBreakdown[model].promptTokens += entry.prompt_tokens || 0;
+      modelBreakdown[model].completionTokens += entry.completion_tokens || 0;
+      modelBreakdown[model].spend += entry.spend || 0;
+      const day = (entry.startTime || entry.created_at || "").slice(0, 10);
+      if (day) {
+        dailySpend[day] = (dailySpend[day] || 0) + (entry.spend || 0);
+      }
+    }
+
+    return {
+      totalSpend,
+      maxBudget,
+      modelSpend,
+      keyName,
+      budgetDuration,
+      budgetResetAt,
+      totalPromptTokens,
+      totalCompletionTokens,
+      totalTokens: totalPromptTokens + totalCompletionTokens,
+      totalRequests,
+      modelBreakdown,
+      dailySpend,
+      hasDetailedLogs: logs.length > 0,
+    };
   });
 
   // --- Settings ---

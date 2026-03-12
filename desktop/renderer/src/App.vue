@@ -79,7 +79,7 @@ onMounted(() => {
 
   // Apply persisted theme and accent color
   window.openclaw.settings.get().then((s) => {
-    applyTheme(s.themeMode || "dark");
+    applyTheme(s.themeMode || "light");
     if (s.accentColor) {
       document.documentElement.style.setProperty("--accent", s.accentColor);
     }

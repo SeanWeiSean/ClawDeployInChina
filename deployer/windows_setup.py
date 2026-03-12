@@ -16,6 +16,7 @@ import time
 import urllib.request
 import zipfile
 from pathlib import Path
+from typing import Callable
 
 from deployer.logger import DeployerLogger
 
@@ -45,6 +46,11 @@ DEFAULT_NODE_DIR = Path(os.environ.get(
     str(Path.home() / ".openclaw-node"),
 ))
 
+DEFAULT_DESKTOP_DIR = Path(os.environ.get(
+    "OPENCLAW_DESKTOP_DIR",
+    str(Path.home() / ".openclaw-desktop"),
+))
+
 # Strict pattern for version strings interpolated into URLs/commands
 _VERSION_RE = re.compile(r'^\d+(\.\d+){0,2}$')
 
@@ -59,6 +65,7 @@ class WindowsSetup:
         self.node_dir = DEFAULT_NODE_DIR
         self._node_bin: Path | None = None
         self._git_bin: str | None = None  # path to git bin directory
+        self._rollback_actions: list[tuple[str, Callable]] = []
 
         # Select mirror based on npm.registry config
         registry = config.get("npm.registry", "")
@@ -70,6 +77,26 @@ class WindowsSetup:
         self._git_mirror_base = mirror["git_mirror_base"]
         mirror_name = "tencent" if "tencent" in registry.lower() else "npmmirror"
         self._mirror_name = mirror_name
+
+    # ────────────────────── Rollback ──────────────────────
+
+    def _register_rollback(self, label: str, fn):
+        """Push a cleanup action onto the rollback stack."""
+        self._rollback_actions.append((label, fn))
+
+    def rollback(self):
+        """Execute all registered rollback actions in reverse order."""
+        if not self._rollback_actions:
+            return
+        self.log.step("正在清理已安装的组件…")
+        for label, fn in reversed(self._rollback_actions):
+            try:
+                self.log.info(f"  回滚: {label}")
+                fn()
+            except Exception as e:
+                self.log.warn(f"  回滚 '{label}' 失败: {e}")
+        self._rollback_actions.clear()
+        self.log.info("清理完成")
 
     # ────────────────────── Git ──────────────────────
 
@@ -139,6 +166,11 @@ class WindowsSetup:
                 # Add to system PATH permanently
                 self._add_to_system_path(git_bin)
                 self.log.success(f"Git installed to {git_dir}")
+                # Register rollback
+                def _rollback_git(d=str(git_dir), b=git_bin):
+                    shutil.rmtree(d, ignore_errors=True)
+                    self._remove_from_system_path(b)
+                self._register_rollback("删除 Git", _rollback_git)
                 return True
 
             self.log.error("Git extraction failed — git.exe not found")
@@ -180,6 +212,22 @@ class WindowsSetup:
             winreg.CloseKey(key)
         except Exception as e:
             self.log.warn(f"  Could not update system PATH: {e}")
+
+    def _remove_from_system_path(self, directory: str):
+        """Remove a directory from system PATH via registry."""
+        try:
+            import winreg
+            key = winreg.OpenKey(
+                winreg.HKEY_LOCAL_MACHINE,
+                r"SYSTEM\CurrentControlSet\Control\Session Manager\Environment",
+                0, winreg.KEY_ALL_ACCESS,
+            )
+            current, _ = winreg.QueryValueEx(key, "Path")
+            parts = [p for p in current.split(";") if p.strip().lower() != directory.lower()]
+            winreg.SetValueEx(key, "Path", 0, winreg.REG_EXPAND_SZ, ";".join(parts))
+            winreg.CloseKey(key)
+        except Exception:
+            pass
 
     # ────────────────────── Node.js ──────────────────────
 
@@ -341,6 +389,10 @@ class WindowsSetup:
             ver = self._get_node_version(str(self.node_dir / "node.exe"))
             if ver:
                 self.log.success(f"Node.js {ver} installed to {self.node_dir}")
+                # Register rollback
+                def _rollback_node(d=str(self.node_dir)):
+                    shutil.rmtree(d, ignore_errors=True)
+                self._register_rollback("删除 Node.js", _rollback_node)
                 return True
 
             self.log.error("Node.js installed but verification failed")
@@ -472,6 +524,16 @@ class WindowsSetup:
                 self.log.success(f"npm registry → {actual}  ✓")
             else:
                 self.log.warn(f"npm registry set to {actual} (expected {expected})")
+            # Register rollback
+            def _rollback_npm_mirror(npm_path=npm, env_copy=self._get_env()):
+                try:
+                    subprocess.run(
+                        [npm_path, "config", "set", "registry", "https://registry.npmjs.org/"],
+                        capture_output=True, timeout=30, env=env_copy,
+                    )
+                except Exception:
+                    pass
+            self._register_rollback("重置 npm 镜像源", _rollback_npm_mirror)
             return True
         except Exception as e:
             self.log.error(f"npm config failed: {e}")
@@ -586,11 +648,13 @@ class WindowsSetup:
             )
             if r.returncode == 0:
                 self.log.success("OpenClaw installed on Windows")
+                self._register_rollback_openclaw(npm, env)
                 return True
             # npm warnings (EBADENGINE etc.) may still succeed
             if "added" in r.stderr.lower() or "openclaw" in r.stdout.lower():
                 self.log.warn(f"npm warnings: {r.stderr.strip()[-300:]}")
                 self.log.success("OpenClaw installed on Windows (with warnings)")
+                self._register_rollback_openclaw(npm, env)
                 return True
             # Log the TAIL of stderr (actual error is at the end, not the beginning)
             err_out = r.stderr.strip()
@@ -599,6 +663,18 @@ class WindowsSetup:
         except Exception as e:
             self.log.error(f"OpenClaw install failed: {e}")
             return False
+
+    def _register_rollback_openclaw(self, npm: str, env: dict):
+        """Register rollback action for OpenClaw npm uninstall."""
+        def _rollback_openclaw():
+            try:
+                subprocess.run(
+                    [npm, "uninstall", "-g", "openclaw"],
+                    capture_output=True, timeout=120, env=env,
+                )
+            except Exception:
+                pass
+        self._register_rollback("卸载 OpenClaw", _rollback_openclaw)
 
     # ────────────────────── Configure + Gateway ──────────────────────
 
@@ -720,6 +796,15 @@ class WindowsSetup:
         except Exception as e:
             self.log.warn(f"Env file write: {e}")
 
+        # Register rollback
+        def _rollback_config(cp=str(config_path), ep=str(env_path)):
+            for p in (cp, ep):
+                try:
+                    Path(p).unlink(missing_ok=True)
+                except Exception:
+                    pass
+        self._register_rollback("删除配置文件", _rollback_config)
+
         return True
 
     def run_onboard(self) -> bool:
@@ -761,10 +846,22 @@ class WindowsSetup:
                 ["powershell", "-Command",
                  f'Start-Process powershell -Verb RunAs -Wait -WindowStyle Hidden '
                  f'-ArgumentList \'-ExecutionPolicy\', \'Bypass\', \'-File\', \'"{tmp_script}"\''],
-                capture_output=True, timeout=120,
+                capture_output=True, timeout=60,
             )
             tmp_script.unlink(missing_ok=True)
             self.log.success("Gateway service installed")
+            # Register rollback
+            def _rollback_gateway_task():
+                try:
+                    subprocess.run(
+                        ["powershell", "-Command",
+                         "Start-Process powershell -Verb RunAs -Wait -WindowStyle Hidden "
+                         "-ArgumentList '-Command', 'Unregister-ScheduledTask -TaskName ''OpenClaw Gateway'' -Confirm:$false'"],
+                        capture_output=True, timeout=30,
+                    )
+                except Exception:
+                    pass
+            self._register_rollback("删除网关计划任务", _rollback_gateway_task)
             return True
         except Exception as e:
             self.log.error(f"Gateway install failed: {e}")
@@ -887,17 +984,228 @@ class WindowsSetup:
                 self.log.warn("Gateway did not become reachable in 15s")
                 self.log.info(f"  Try manually: {open_url}")
 
+            # Register rollback
+            def _rollback_gateway_stop(c=cmd, e=env):
+                try:
+                    subprocess.run(c + ["daemon", "stop"], capture_output=True, timeout=10, env=e)
+                except Exception:
+                    pass
+            self._register_rollback("停止网关", _rollback_gateway_stop)
+
             return ready
         except Exception as e:
             self.log.error(f"Gateway start failed: {e}")
             return False
 
+    # ────────────────────── Desktop Client ──────────────────────
+
+    def _find_local_desktop_zip(self) -> Path | None:
+        """Look for a bundled desktop zip in _MEIPASS, next to exe, or CWD."""
+        import sys
+        candidates = []
+        # Bundled inside PyInstaller exe (_MEIPASS)
+        if getattr(sys, 'frozen', False) and hasattr(sys, '_MEIPASS'):
+            candidates.append(Path(sys._MEIPASS) / "openclaw-desktop-portable.zip")
+        # Next to the exe (distribution scenario)
+        if getattr(sys, 'frozen', False):
+            candidates.append(Path(sys.executable).parent / "openclaw-desktop-portable.zip")
+        # CWD (development scenario)
+        candidates.append(Path.cwd() / "openclaw-desktop-portable.zip")
+        candidates.append(Path.cwd() / "dist" / "openclaw-desktop-portable.zip")
+        for p in candidates:
+            if p.exists():
+                return p
+        return None
+
+    def install_desktop_client(self) -> bool:
+        """Install OpenClaw Desktop (Electron portable).
+
+        Priority: local zip next to exe > network download.
+        """
+        install_dir = DEFAULT_DESKTOP_DIR
+
+        # Skip if already installed
+        exe_path = install_dir / "OpenClaw.exe"
+        if exe_path.exists():
+            self.log.info(f"桌面客户端已存在: {exe_path}")
+            return True
+
+        # 1. Try local bundled zip
+        local_zip = self._find_local_desktop_zip()
+        if local_zip:
+            self.log.step(f"从本地安装桌面客户端 ({local_zip.name})…")
+            return self._extract_desktop_zip(local_zip, install_dir)
+
+        # 2. Try network download
+        download_url = self.cfg.get("desktop.download_url", "")
+        if not download_url:
+            self.log.warn("未找到本地桌面客户端包，也未配置下载地址，跳过客户端安装")
+            return True  # Non-fatal
+
+        if not download_url.startswith(("https://", "http://")):
+            self.log.error(f"Invalid desktop download URL: {download_url!r}")
+            return False
+
+        self.log.step("下载 OpenClaw 桌面客户端…")
+        try:
+            tmp_dir = Path(tempfile.mkdtemp(prefix="openclaw_desktop_"))
+            zip_path = tmp_dir / "openclaw-desktop.zip"
+            self._download_with_progress(download_url, zip_path)
+            result = self._extract_desktop_zip(zip_path, install_dir)
+            shutil.rmtree(tmp_dir, ignore_errors=True)
+            return result
+        except Exception as e:
+            self.log.error(f"桌面客户端下载失败: {e}")
+            return False
+
+    def _extract_desktop_zip(self, zip_path: Path, install_dir: Path) -> bool:
+        """Extract a desktop client zip to install_dir."""
+        if not zipfile.is_zipfile(zip_path):
+            self.log.error("文件不是有效的 zip 包")
+            return False
+
+        self.log.step("解压桌面客户端…")
+        install_dir.mkdir(parents=True, exist_ok=True)
+
+        try:
+            with zipfile.ZipFile(zip_path, "r") as zf:
+                zf.extractall(install_dir)
+        except Exception as e:
+            self.log.error(f"解压失败: {e}")
+            return False
+
+        exe_path = install_dir / "OpenClaw.exe"
+
+        # electron-builder portable may nest inside a subfolder
+        # e.g. "win-unpacked/" — detect and flatten if needed
+        subdirs = [d for d in install_dir.iterdir() if d.is_dir()]
+        if not exe_path.exists() and len(subdirs) == 1:
+            nested_exe = subdirs[0] / "OpenClaw.exe"
+            if nested_exe.exists():
+                for item in subdirs[0].iterdir():
+                    dest = install_dir / item.name
+                    if dest.exists():
+                        if dest.is_dir():
+                            shutil.rmtree(dest)
+                        else:
+                            dest.unlink()
+                    shutil.move(str(item), str(dest))
+                subdirs[0].rmdir()
+
+        if exe_path.exists():
+            self.log.success(f"桌面客户端安装到 {install_dir}")
+            def _rollback_desktop(d=str(install_dir)):
+                shutil.rmtree(d, ignore_errors=True)
+            self._register_rollback("删除桌面客户端", _rollback_desktop)
+            return True
+
+        # Try to find exe with different name
+        exes = list(install_dir.glob("*.exe"))
+        if exes:
+            self.log.success(f"桌面客户端安装到 {install_dir} (exe: {exes[0].name})")
+            def _rollback_desktop(d=str(install_dir)):
+                shutil.rmtree(d, ignore_errors=True)
+            self._register_rollback("删除桌面客户端", _rollback_desktop)
+            return True
+
+        self.log.error("解压后未找到可执行文件")
+        shutil.rmtree(install_dir, ignore_errors=True)
+        return False
+
+    def _find_desktop_exe(self) -> Path | None:
+        """Find the desktop client exe."""
+        install_dir = DEFAULT_DESKTOP_DIR
+        # Primary name
+        exe = install_dir / "OpenClaw.exe"
+        if exe.exists():
+            return exe
+        # Fallback: any exe in the directory
+        exes = list(install_dir.glob("*.exe"))
+        return exes[0] if exes else None
+
     def create_desktop_shortcut(self) -> bool:
-        """Create a desktop shortcut that opens the OpenClaw dashboard."""
+        """Create a desktop shortcut for the OpenClaw Desktop client.
+
+        If the Electron client is installed, create a .lnk pointing to it.
+        Otherwise, fall back to a .url shortcut opening the gateway dashboard.
+        """
         self.log.step("Creating desktop shortcut…")
+
+        desktop = self._get_desktop_path()
+        desktop_exe = self._find_desktop_exe()
+
+        if desktop_exe:
+            return self._create_lnk_shortcut(desktop, desktop_exe)
+        else:
+            self.log.info("桌面客户端未安装，创建浏览器快捷方式作为备选")
+            return self._create_url_shortcut(desktop)
+
+    def _get_desktop_path(self) -> Path:
+        """Resolve the user's Desktop folder path."""
+        desktop = Path.home() / "Desktop"
+        if not desktop.exists():
+            try:
+                import winreg
+                key = winreg.OpenKey(
+                    winreg.HKEY_CURRENT_USER,
+                    r"Software\Microsoft\Windows\CurrentVersion\Explorer\User Shell Folders",
+                )
+                desktop_val, _ = winreg.QueryValueEx(key, "Desktop")
+                winreg.CloseKey(key)
+                desktop = Path(os.path.expandvars(desktop_val))
+            except Exception:
+                pass
+        return desktop
+
+    def _create_lnk_shortcut(self, desktop: Path, target_exe: Path) -> bool:
+        """Create a proper .lnk shortcut to the Electron app via PowerShell."""
+        shortcut_path = desktop / "OpenClaw.lnk"
+        # Remove stale .url shortcut if exists
+        stale_url = desktop / "OpenClaw.url"
+        stale_url.unlink(missing_ok=True)
+
+        try:
+            # Find icon
+            ico_path = self._resolve_icon()
+            ico_arg = ""
+            if ico_path:
+                ico_arg = f'$s.IconLocation = "{ico_path},0";'
+
+            ps_script = (
+                f'$ws = New-Object -ComObject WScript.Shell;'
+                f'$s = $ws.CreateShortcut("{shortcut_path}");'
+                f'$s.TargetPath = "{target_exe}";'
+                f'$s.WorkingDirectory = "{target_exe.parent}";'
+                f'$s.Description = "OpenClaw Desktop";'
+                f'{ico_arg}'
+                f'$s.Save()'
+            )
+            subprocess.run(
+                ["powershell", "-NoProfile", "-Command", ps_script],
+                capture_output=True, timeout=15,
+            )
+
+            if shortcut_path.exists():
+                self.log.success(f"Desktop shortcut created: {shortcut_path}")
+                def _rollback_shortcut(p=str(shortcut_path)):
+                    try:
+                        Path(p).unlink(missing_ok=True)
+                    except Exception:
+                        pass
+                self._register_rollback("删除桌面快捷方式", _rollback_shortcut)
+                return True
+
+            self.log.warn("PowerShell shortcut creation returned but .lnk not found")
+            return self._create_url_shortcut(desktop)
+
+        except Exception as e:
+            self.log.warn(f"LNK shortcut failed ({e}), falling back to URL shortcut")
+            return self._create_url_shortcut(desktop)
+
+    def _create_url_shortcut(self, desktop: Path) -> bool:
+        """Fallback: create a .url shortcut to the gateway dashboard."""
         port = self.cfg.get("gateway.port", 18789)
 
-        # Read token from config
         import json
         config_path = Path.home() / ".openclaw" / "openclaw.json"
         token = ""
@@ -911,60 +1219,43 @@ class WindowsSetup:
         if token:
             url += f"?token={token}"
 
-        desktop = Path.home() / "Desktop"
-        if not desktop.exists():
-            # Some localized Windows use a different Desktop path
-            try:
-                import winreg
-                key = winreg.OpenKey(
-                    winreg.HKEY_CURRENT_USER,
-                    r"Software\Microsoft\Windows\CurrentVersion\Explorer\User Shell Folders",
-                )
-                desktop_val, _ = winreg.QueryValueEx(key, "Desktop")
-                winreg.CloseKey(key)
-                desktop = Path(os.path.expandvars(desktop_val))
-            except Exception:
-                pass
-
         shortcut_path = desktop / "OpenClaw.url"
         try:
-            # .url shortcut — simple, no COM dependency, works everywhere
-            shortcut_path.write_text(
-                f"[InternetShortcut]\n"
-                f"URL={url}\n"
-                f"IconIndex=0\n",
-                encoding="utf-8",
-            )
-
-            # Also try to set a custom icon if openclaw.ico exists
-            import sys
-            ico_candidates = [
-                Path.home() / ".openclaw" / "openclaw.ico",
-                Path(__file__).parent.parent / "openclaw.ico",
-            ]
-            if getattr(sys, 'frozen', False):
-                ico_candidates.insert(0, Path(sys._MEIPASS) / "openclaw.ico")
-                ico_candidates.insert(1, Path(sys.executable).parent / "openclaw.ico")
-            for ico in ico_candidates:
-                if ico.exists():
-                    # Copy ico to .openclaw for persistence
-                    target_ico = Path.home() / ".openclaw" / "openclaw.ico"
-                    if not target_ico.exists():
-                        shutil.copy2(ico, target_ico)
-                    shortcut_path.write_text(
-                        f"[InternetShortcut]\n"
-                        f"URL={url}\n"
-                        f"IconFile={target_ico}\n"
-                        f"IconIndex=0\n",
-                        encoding="utf-8",
-                    )
-                    break
-
+            content = f"[InternetShortcut]\nURL={url}\nIconIndex=0\n"
+            ico_path = self._resolve_icon()
+            if ico_path:
+                content = f"[InternetShortcut]\nURL={url}\nIconFile={ico_path}\nIconIndex=0\n"
+            shortcut_path.write_text(content, encoding="utf-8")
             self.log.success(f"Desktop shortcut created: {shortcut_path}")
+            def _rollback_shortcut(p=str(shortcut_path)):
+                try:
+                    Path(p).unlink(missing_ok=True)
+                except Exception:
+                    pass
+            self._register_rollback("删除桌面快捷方式", _rollback_shortcut)
             return True
         except Exception as e:
             self.log.warn(f"Could not create desktop shortcut: {e}")
             return True  # Non-fatal
+
+    def _resolve_icon(self) -> Path | None:
+        """Find and ensure openclaw.ico is in ~/.openclaw/."""
+        import sys
+        target_ico = Path.home() / ".openclaw" / "openclaw.ico"
+        if target_ico.exists():
+            return target_ico
+        candidates = [
+            Path(__file__).parent.parent / "openclaw.ico",
+        ]
+        if getattr(sys, 'frozen', False):
+            candidates.insert(0, Path(sys._MEIPASS) / "openclaw.ico")
+            candidates.insert(1, Path(sys.executable).parent / "openclaw.ico")
+        for ico in candidates:
+            if ico.exists():
+                target_ico.parent.mkdir(parents=True, exist_ok=True)
+                shutil.copy2(ico, target_ico)
+                return target_ico
+        return None
 
     def _find_openclaw_cmd(self) -> list[str] | None:
         """Find openclaw executable on Windows.
@@ -1103,6 +1394,24 @@ class WindowsSetup:
             for d in added:
                 self.log.info(f"  Added to PATH: {d}")
             self.log.success("PATH updated (restart terminal to take effect)")
+
+            # Register rollback
+            def _rollback_path(dirs=list(added)):
+                try:
+                    import winreg
+                    key = winreg.OpenKey(
+                        winreg.HKEY_CURRENT_USER, r"Environment",
+                        0, winreg.KEY_READ | winreg.KEY_WRITE,
+                    )
+                    current, _ = winreg.QueryValueEx(key, "Path")
+                    parts = [p for p in current.split(";")
+                             if p.strip().lower() not in {d.lower() for d in dirs}]
+                    winreg.SetValueEx(key, "Path", 0, winreg.REG_EXPAND_SZ, ";".join(parts))
+                    winreg.CloseKey(key)
+                except Exception:
+                    pass
+            self._register_rollback("移除 PATH 条目", _rollback_path)
+
             return True
 
         except Exception as e:

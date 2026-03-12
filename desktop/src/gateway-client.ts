@@ -123,6 +123,16 @@ export class GatewayClient {
     return this.request("cron.list");
   }
 
+  /** List available agents. */
+  listAgents(): Promise<{ agents?: unknown[] }> {
+    return this.request("agents.list");
+  }
+
+  /** List connected IM channels. */
+  listChannels(): Promise<{ channels?: unknown[] }> {
+    return this.request("channels.list");
+  }
+
   // ── Internal ──
 
   private connect() {
