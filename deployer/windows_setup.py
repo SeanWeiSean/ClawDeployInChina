@@ -746,9 +746,10 @@ class WindowsSetup:
                 f'$env:LITELLM_API_KEY = "{api_key}"',
                 f'& "{openclaw_path}" daemon install',
                 '',
-                '# Set scheduled task to hidden (no cmd window)',
+                '# Set scheduled task to run in background (no cmd window)',
                 "try {",
                 "    $task = Get-ScheduledTask -TaskName 'OpenClaw Gateway' -ErrorAction Stop",
+                "    $task.Principal.LogonType = 'S4U'",
                 "    $task.Settings.Hidden = $true",
                 "    Set-ScheduledTask -InputObject $task | Out-Null",
                 "} catch {}",
@@ -794,16 +795,17 @@ class WindowsSetup:
             pass
 
     def _fix_gateway_task_background(self):
-        """Set the OpenClaw Gateway scheduled task to hidden."""
+        """Set the OpenClaw Gateway scheduled task to run in background."""
         try:
             subprocess.run(
                 ["powershell", "-Command",
                  "$task = Get-ScheduledTask -TaskName 'OpenClaw Gateway' -ErrorAction Stop; "
+                 "$task.Principal.LogonType = 'S4U'; "
                  "$task.Settings.Hidden = $true; "
                  "Set-ScheduledTask -InputObject $task | Out-Null"],
                 capture_output=True, timeout=15,
             )
-            self.log.info("  Scheduled task set to hidden mode")
+            self.log.info("  Scheduled task set to background mode")
         except Exception:
             pass
 
@@ -833,7 +835,7 @@ class WindowsSetup:
             pass
 
         try:
-            # Stop any running gateway and clean up stale lock files
+            # Stop any running gateway first
             try:
                 subprocess.run(
                     cmd + ["daemon", "stop"],
@@ -842,23 +844,13 @@ class WindowsSetup:
             except Exception:
                 pass
 
-            # Remove stale lock files that prevent gateway from starting
-            import glob
-            lock_dir = Path.home() / "AppData" / "Local" / "Temp" / "openclaw"
-            for lock in lock_dir.glob("gateway.*.lock"):
-                try:
-                    lock.unlink()
-                    self.log.info(f"  Removed stale lock: {lock.name}")
-                except Exception:
-                    pass
-
             time.sleep(1)
 
             # Start via daemon (runs the scheduled task)
             r = subprocess.run(
                 cmd + ["daemon", "start"],
                 capture_output=True, text=True, encoding="utf-8",
-                errors="replace", timeout=90, env=env,
+                errors="replace", timeout=30, env=env,
             )
             if r.returncode == 0:
                 self.log.info("  Gateway started via daemon")

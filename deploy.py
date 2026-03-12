@@ -268,7 +268,7 @@ class DeployerApp(tk.Tk):
             r = subprocess.run(
                 cmd + ["--version"],
                 capture_output=True, text=True, encoding="utf-8", errors="replace",
-                timeout=15, env=env,
+                timeout=15, env=env, creationflags=0x08000000,
             )
             return r.returncode == 0 and bool(r.stdout.strip())
         except Exception:
