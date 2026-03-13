@@ -1072,6 +1072,9 @@ class WindowsSetup:
             dirs_to_add.append(str(npm_global))
 
         if not dirs_to_add:
+            if self._node_bin and shutil.which("node"):
+                self.log.info("Node.js already in PATH; no directories to add")
+                return True
             self.log.warn("No directories to add to PATH")
             return False
 
