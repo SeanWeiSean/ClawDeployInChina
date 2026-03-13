@@ -173,11 +173,13 @@ async function saveAndFinish() {
 }
 
 async function skipSetup() {
+  const token = Math.random().toString(36).slice(2) + Date.now().toString(36);
   const config = {
     gateway: {
       port: 18789,
       bind: "loopback",
       mode: "local",
+      auth: { mode: "token", token },
     },
   };
   await window.openclaw.config.write(config);
