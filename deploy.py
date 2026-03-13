@@ -297,10 +297,10 @@ class DeployerApp(tk.Tk):
         import sys
         candidates = []
         if getattr(sys, 'frozen', False):
-            candidates.append(Path(sys._MEIPASS) / "openclaw.ico")
-            candidates.append(Path(sys.executable).parent / "openclaw.ico")
-        candidates.append(Path.cwd() / "openclaw.ico")
-        candidates.append(Path(__file__).parent / "openclaw.ico")
+            candidates.append(Path(sys._MEIPASS) / "microclaw.ico")
+            candidates.append(Path(sys.executable).parent / "microclaw.ico")
+        candidates.append(Path.cwd() / "microclaw.ico")
+        candidates.append(Path(__file__).parent / "microclaw.ico")
         for ico in candidates:
             if ico.exists():
                 try:
