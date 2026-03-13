@@ -1323,17 +1323,17 @@ class WindowsSetup:
             return True  # Non-fatal
 
     def _resolve_icon(self) -> Path | None:
-        """Find and ensure openclaw.ico is in ~/.openclaw/."""
+        """Find and ensure microclaw.ico is in ~/.openclaw/."""
         import sys
-        target_ico = Path.home() / ".openclaw" / "openclaw.ico"
+        target_ico = Path.home() / ".openclaw" / "microclaw.ico"
         if target_ico.exists():
             return target_ico
         candidates = [
-            Path(__file__).parent.parent / "openclaw.ico",
+            Path(__file__).parent.parent / "microclaw.ico",
         ]
         if getattr(sys, 'frozen', False):
-            candidates.insert(0, Path(sys._MEIPASS) / "openclaw.ico")
-            candidates.insert(1, Path(sys.executable).parent / "openclaw.ico")
+            candidates.insert(0, Path(sys._MEIPASS) / "microclaw.ico")
+            candidates.insert(1, Path(sys.executable).parent / "microclaw.ico")
         for ico in candidates:
             if ico.exists():
                 target_ico.parent.mkdir(parents=True, exist_ok=True)

@@ -5,7 +5,7 @@ a = Analysis(
     ['deploy.py'],
     pathex=[],
     binaries=[],
-    datas=[('openclaw.ico', '.'), ('dist/microclaw-portable.zip', '.')],
+    datas=[('microclaw.ico', '.'), ('dist/microclaw-portable.zip', '.')],
     hiddenimports=[],
     hookspath=[],
     hooksconfig={},
@@ -35,5 +35,5 @@ exe = EXE(
     target_arch=None,
     codesign_identity=None,
     entitlements_file=None,
-    icon=['openclaw.ico'],
+    icon=['microclaw.ico'],
 )
