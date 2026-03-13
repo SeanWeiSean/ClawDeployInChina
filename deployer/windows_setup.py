@@ -54,6 +54,9 @@ DEFAULT_DESKTOP_DIR = Path(os.environ.get(
 # Strict pattern for version strings interpolated into URLs/commands
 _VERSION_RE = re.compile(r'^\d+(\.\d+){0,2}$')
 
+# Hide console windows spawned by subprocess on Windows
+_CREATE_NO_WINDOW = 0x08000000
+
 
 class WindowsSetup:
     """Handles Node.js + OpenClaw installation on Windows natively."""
@@ -77,6 +80,14 @@ class WindowsSetup:
         self._git_mirror_base = mirror["git_mirror_base"]
         mirror_name = "tencent" if "tencent" in registry.lower() else "npmmirror"
         self._mirror_name = mirror_name
+
+    # ────────────────────── Subprocess helper ──────────────────────
+
+    @staticmethod
+    def _run(cmd, **kwargs):
+        """Wrapper around subprocess.run that hides console windows on Windows."""
+        kwargs.setdefault("creationflags", _CREATE_NO_WINDOW)
+        return subprocess.run(cmd, **kwargs)
 
     # ────────────────────── Rollback ──────────────────────
 
@@ -146,7 +157,7 @@ class WindowsSetup:
                     zf.extractall(git_dir)
             else:
                 # PortableGit self-extracts with -o flag
-                subprocess.run(
+                self._run(
                     [str(dl_path), "-o" + str(git_dir), "-y"],
                     capture_output=True, text=True, timeout=120,
                 )
@@ -483,7 +494,12 @@ class WindowsSetup:
     # ────────────────────── npm config ──────────────────────
 
     def setup_npm_mirror(self) -> bool:
-        """Set npm registry and global prefix."""
+        """Set npm registry and global prefix.
+
+        Redirects npm's global config path via npm_config_globalconfig env var
+        so that npm never touches the system npmrc (which may be under
+        C:\\Program Files and need admin privileges).
+        """
         registry = self.cfg.get("npm.registry", NPM_REGISTRY)
         self.log.step(f"Configuring npm registry ({registry})…")
         npm = self._get_npm_path()
@@ -493,17 +509,16 @@ class WindowsSetup:
         try:
             env = self._get_env()
 
-            # Ensure npm global prefix points to our managed dir
-            # so `npm install -g` puts openclaw.cmd there
+            # Set prefix so `npm install -g` puts openclaw.cmd in our dir
             try:
-                subprocess.run(
+                self._run(
                     [npm, "config", "set", "prefix", str(self.node_dir)],
                     capture_output=True, timeout=30, env=env,
                 )
             except Exception:
                 pass
 
-            r = subprocess.run(
+            r = self._run(
                 [npm, "config", "set", "registry", registry],
                 capture_output=True, text=True, encoding="utf-8", errors="replace",
                 timeout=30, env=env,
@@ -513,7 +528,7 @@ class WindowsSetup:
                 return False
 
             # Verify
-            r2 = subprocess.run(
+            r2 = self._run(
                 [npm, "config", "get", "registry"],
                 capture_output=True, text=True, encoding="utf-8", errors="replace",
                 timeout=10, env=env,
@@ -524,10 +539,11 @@ class WindowsSetup:
                 self.log.success(f"npm registry → {actual}  ✓")
             else:
                 self.log.warn(f"npm registry set to {actual} (expected {expected})")
+
             # Register rollback
-            def _rollback_npm_mirror(npm_path=npm, env_copy=self._get_env()):
+            def _rollback_npm_mirror(npm_path=npm, env_copy=env.copy()):
                 try:
-                    subprocess.run(
+                    WindowsSetup._run(
                         [npm_path, "config", "set", "registry", "https://registry.npmjs.org/"],
                         capture_output=True, timeout=30, env=env_copy,
                     )
@@ -537,6 +553,9 @@ class WindowsSetup:
             return True
         except Exception as e:
             self.log.error(f"npm config failed: {e}")
+            self.log.info(f"  node_dir: {self.node_dir}")
+            self.log.info(f"  node_dir exists: {self.node_dir.exists()}")
+            self.log.info(f"  npm_config_globalconfig: {env.get('npm_config_globalconfig', 'NOT SET')}")
             return False
 
     # ────────────────────── OpenClaw ──────────────────────
@@ -551,7 +570,7 @@ class WindowsSetup:
             return False
         try:
             env = self._get_env()
-            r = subprocess.run(
+            r = self._run(
                 [npm, "list", "-g", "openclaw", "--depth=0"],
                 capture_output=True, text=True, encoding="utf-8", errors="replace",
                 timeout=30, env=env,
@@ -572,7 +591,7 @@ class WindowsSetup:
         """
         self.log.step("Checking PowerShell execution policy…")
         try:
-            r = subprocess.run(
+            r = self._run(
                 ["powershell", "-NoProfile", "-Command",
                  "Get-ExecutionPolicy -Scope CurrentUser"],
                 capture_output=True, text=True, timeout=10,
@@ -585,7 +604,7 @@ class WindowsSetup:
             pass
 
         try:
-            subprocess.run(
+            self._run(
                 ["powershell", "-NoProfile", "-Command",
                  "Set-ExecutionPolicy -Scope CurrentUser -ExecutionPolicy RemoteSigned -Force"],
                 capture_output=True, text=True, timeout=10,
@@ -610,7 +629,7 @@ class WindowsSetup:
             "git@github.com:",
         ]:
             try:
-                subprocess.run(
+                self._run(
                     [git, "config", "--global",
                      f"url.https://github.com/.insteadOf", pattern],
                     capture_output=True, text=True, timeout=10,
@@ -640,7 +659,7 @@ class WindowsSetup:
             env["NODE_LLAMA_CPP_SKIP_DOWNLOAD"] = "true"
             self.log.info("Set NODE_LLAMA_CPP_SKIP_DOWNLOAD=true")
 
-            r = subprocess.run(
+            r = self._run(
                 [npm, "install", "-g", f"openclaw@{tag}",
                  "--loglevel", "warn"],
                 capture_output=True, text=True, encoding="utf-8", errors="replace",
@@ -668,7 +687,7 @@ class WindowsSetup:
         """Register rollback action for OpenClaw npm uninstall."""
         def _rollback_openclaw():
             try:
-                subprocess.run(
+                WindowsSetup._run(
                     [npm, "uninstall", "-g", "openclaw"],
                     capture_output=True, timeout=120, env=env,
                 )
@@ -724,15 +743,6 @@ class WindowsSetup:
             for m in migrated:
                 self.log.info(f"  Config migration: {m}")
 
-        # ── Model: use custom provider via models.providers ──
-        existing["agents"] = {
-            "defaults": {
-                "model": {
-                    "primary": provider_model,
-                },
-            },
-        }
-
         # ── Gateway ──
         gw = existing.get("gateway", {})
         gw["port"] = port
@@ -748,53 +758,86 @@ class WindowsSetup:
         gw["auth"] = auth
         existing["gateway"] = gw
 
-        # ── Custom LiteLLM provider (openai-completions API) ──
-        # apiKey uses ${ENV_VAR} syntax so secrets stay in .env
-        api_url = base_url.rstrip("/")
-        if not api_url.endswith("/v1"):
-            api_url += "/v1"
+        # ── Model + provider: only write when api_key is configured ──
+        if api_key and base_url:
+            existing["agents"] = {
+                "defaults": {
+                    "model": {
+                        "primary": provider_model,
+                    },
+                },
+            }
 
-        existing["models"] = {
-            "mode": "merge",
-            "providers": {
-                "litellm": {
-                    "baseUrl": api_url,
-                    "apiKey": "${LITELLM_API_KEY}",
-                    "api": "openai-completions",
-                    "models": [
-                        {
-                            "id": bare_model,
-                            "name": bare_model,
-                            "reasoning": True,
-                            "input": ["text", "image"],
-                            "contextWindow": 200000,
-                            "maxTokens": 16384,
-                        }
-                    ],
-                }
-            },
-        }
+            # apiKey uses ${ENV_VAR} syntax so secrets stay in .env
+            api_url = base_url.rstrip("/")
+            if not api_url.endswith("/v1"):
+                api_url += "/v1"
+
+            existing["models"] = {
+                "mode": "merge",
+                "providers": {
+                    "litellm": {
+                        "baseUrl": api_url,
+                        "apiKey": "${LITELLM_API_KEY}",
+                        "api": "openai-completions",
+                        "models": [
+                            {
+                                "id": bare_model,
+                                "name": bare_model,
+                                "reasoning": True,
+                                "input": ["text", "image"],
+                                "contextWindow": 200000,
+                                "maxTokens": 16384,
+                            }
+                        ],
+                    }
+                },
+            }
+        else:
+            self.log.info("  No API key/base URL configured — skipping model provider")
+            # Remove any existing invalid model provider entries to prevent
+            # startup errors like "Invalid option" for api field
+            VALID_API_TYPES = {
+                "openai-completions", "openai-responses", "openai-codex-responses",
+                "anthropic-messages", "google-generative-ai", "github-copilot",
+                "bedrock-converse-stream", "ollama",
+            }
+            providers = existing.get("models", {}).get("providers", {})
+            invalid = [
+                name for name, cfg in providers.items()
+                if isinstance(cfg, dict) and cfg.get("api") not in VALID_API_TYPES
+            ]
+            for name in invalid:
+                self.log.warn(f"  Removing invalid model provider '{name}' "
+                              f"(api: {providers[name].get('api', '<missing>')})")
+                del providers[name]
+            if invalid and not providers:
+                existing.pop("models", None)
 
         try:
             config_path.write_text(json.dumps(existing, indent=2), encoding="utf-8")
             self.log.success(f"Config written to {config_path}")
-            self.log.info(f"  Model: {provider_model}")
-            self.log.info(f"  Provider: litellm → {api_url}")
-            self.log.info(f"  API type: openai-completions")
+            if api_key and base_url:
+                self.log.info(f"  Model: {provider_model}")
+                self.log.info(f"  Provider: litellm → {api_url}")
+                self.log.info(f"  API type: openai-completions")
+            else:
+                self.log.info("  Model provider not configured — configure later in desktop app")
         except Exception as e:
             self.log.error(f"Config write failed: {e}")
             return False
 
-        # ── .env file (secrets) ──
+        # ── .env file (secrets) — only write if api_key is set ──
         env_path = openclaw_dir / ".env"
-        try:
-            env_path.write_text(
-                f"LITELLM_API_KEY={api_key}\n",
-                encoding="utf-8",
-            )
-            self.log.success(f"Environment written to {env_path}")
-        except Exception as e:
-            self.log.warn(f"Env file write: {e}")
+        if api_key:
+            try:
+                env_path.write_text(
+                    f"LITELLM_API_KEY={api_key}\n",
+                    encoding="utf-8",
+                )
+                self.log.success(f"Environment written to {env_path}")
+            except Exception as e:
+                self.log.warn(f"Env file write: {e}")
 
         # Register rollback
         def _rollback_config(cp=str(config_path), ep=str(env_path)):
@@ -820,15 +863,24 @@ class WindowsSetup:
         if api_key:
             env["LITELLM_API_KEY"] = api_key
 
-        # Remove existing scheduled task to avoid conflicts
-        self._remove_existing_gateway_task()
-
         # Always elevate — schtasks create requires admin
+        # Remove + install are combined into one elevated script to avoid double UAC prompt
         try:
             openclaw_path = cmd[0]
             tmp_script = Path(tempfile.mktemp(suffix=".ps1", prefix="openclaw_gw_"))
             lines = [
-                f'$env:LITELLM_API_KEY = "{api_key}"',
+                "# Remove existing scheduled task to avoid conflicts",
+                "try {",
+                "    $existing = Get-ScheduledTask -TaskName 'OpenClaw Gateway' -ErrorAction SilentlyContinue",
+                "    if ($existing) {",
+                "        Unregister-ScheduledTask -TaskName 'OpenClaw Gateway' -Confirm:$false",
+                "    }",
+                "} catch {}",
+                "",
+            ]
+            if api_key:
+                lines.append(f'$env:LITELLM_API_KEY = "{api_key}"')
+            lines += [
                 f'& "{openclaw_path}" daemon install',
                 '',
                 '# Set scheduled task to run in background (no cmd window)',
@@ -842,18 +894,19 @@ class WindowsSetup:
             ]
             tmp_script.write_text("\n".join(lines), encoding="utf-8")
 
-            subprocess.run(
+            self.log.info('  请在 UAC 弹窗中点击「是」以授权安装…')
+            self._run(
                 ["powershell", "-Command",
                  f'Start-Process powershell -Verb RunAs -Wait -WindowStyle Hidden '
                  f'-ArgumentList \'-ExecutionPolicy\', \'Bypass\', \'-File\', \'"{tmp_script}"\''],
-                capture_output=True, timeout=60,
+                capture_output=True, timeout=90,
             )
             tmp_script.unlink(missing_ok=True)
             self.log.success("Gateway service installed")
             # Register rollback
             def _rollback_gateway_task():
                 try:
-                    subprocess.run(
+                    WindowsSetup._run(
                         ["powershell", "-Command",
                          "Start-Process powershell -Verb RunAs -Wait -WindowStyle Hidden "
                          "-ArgumentList '-Command', 'Unregister-ScheduledTask -TaskName ''OpenClaw Gateway'' -Confirm:$false'"],
@@ -870,7 +923,7 @@ class WindowsSetup:
     def _remove_existing_gateway_task(self):
         """Delete existing 'OpenClaw Gateway' scheduled task if present."""
         try:
-            r = subprocess.run(
+            r = self._run(
                 ["powershell", "-Command",
                  "Get-ScheduledTask -TaskName 'OpenClaw Gateway' -ErrorAction SilentlyContinue"],
                 capture_output=True, text=True, timeout=15,
@@ -882,7 +935,7 @@ class WindowsSetup:
 
         self.log.info("  Removing existing 'OpenClaw Gateway' scheduled task…")
         try:
-            subprocess.run(
+            self._run(
                 ["powershell", "-Command",
                  "Start-Process powershell -Verb RunAs -Wait -WindowStyle Hidden "
                  "-ArgumentList '-Command', 'Unregister-ScheduledTask -TaskName ''OpenClaw Gateway'' -Confirm:$false'"],
@@ -894,7 +947,7 @@ class WindowsSetup:
     def _fix_gateway_task_background(self):
         """Set the OpenClaw Gateway scheduled task to run in background."""
         try:
-            subprocess.run(
+            self._run(
                 ["powershell", "-Command",
                  "$task = Get-ScheduledTask -TaskName 'OpenClaw Gateway' -ErrorAction Stop; "
                  "$task.Principal.LogonType = 'S4U'; "
@@ -934,7 +987,7 @@ class WindowsSetup:
         try:
             # Stop any running gateway first
             try:
-                subprocess.run(
+                self._run(
                     cmd + ["daemon", "stop"],
                     capture_output=True, timeout=10, env=env,
                 )
@@ -943,26 +996,46 @@ class WindowsSetup:
 
             time.sleep(1)
 
-            # Start via daemon (runs the scheduled task)
-            r = subprocess.run(
+            # Try daemon start first (works if scheduled task exists)
+            # Fall back to direct gateway process if no task installed
+            started = False
+            r = self._run(
                 cmd + ["daemon", "start"],
                 capture_output=True, text=True, encoding="utf-8",
                 errors="replace", timeout=30, env=env,
             )
             if r.returncode == 0:
                 self.log.info("  Gateway started via daemon")
+                started = True
             else:
-                out = (r.stdout + r.stderr).strip()
-                if out:
-                    for line in out.splitlines()[-3:]:
-                        self.log.info(f"  {line}")
-                self.log.warn("daemon start returned non-zero")
+                self.log.info("  daemon start failed, starting gateway directly…")
+
+            # Check if gateway is reachable after daemon start
+            if started:
+                time.sleep(3)
+                try:
+                    with socket.create_connection(("127.0.0.1", port), timeout=2):
+                        pass  # reachable
+                except (ConnectionRefusedError, OSError):
+                    started = False
+                    self.log.info("  daemon started but gateway not reachable, trying direct start…")
+
+            # Direct start as background process (no scheduled task needed)
+            if not started:
+                import subprocess as _sp
+                gw_proc = _sp.Popen(
+                    cmd + ["gateway"],
+                    env=env,
+                    stdout=_sp.DEVNULL, stderr=_sp.DEVNULL,
+                    creationflags=_sp.CREATE_NO_WINDOW | _sp.DETACHED_PROCESS,
+                )
+                self.log.info(f"  Gateway started directly (pid={gw_proc.pid})")
 
             dashboard_url = f"http://127.0.0.1:{port}/"
             self._dashboard_url = dashboard_url
             open_url = dashboard_url
             if self._gateway_token:
-                open_url = f"{dashboard_url}?token={self._gateway_token}"
+                open_url = f"{dashboard_url}#token={self._gateway_token}"
 
             # Wait for gateway to be reachable
             self.log.info("  Waiting for gateway to be ready…")
@@ -987,7 +1060,7 @@ class WindowsSetup:
             # Register rollback
             def _rollback_gateway_stop(c=cmd, e=env):
                 try:
-                    subprocess.run(c + ["daemon", "stop"], capture_output=True, timeout=10, env=e)
+                    WindowsSetup._run(c + ["daemon", "stop"], capture_output=True, timeout=10, env=e)
                 except Exception:
                     pass
             self._register_rollback("停止网关", _rollback_gateway_stop)
@@ -1024,11 +1097,20 @@ class WindowsSetup:
         """
         install_dir = DEFAULT_DESKTOP_DIR
 
-        # Skip if already installed
+        # If already installed, overwrite with bundled version
         exe_path = install_dir / "MicroClaw.exe"
         if exe_path.exists():
-            self.log.info(f"桌面客户端已存在: {exe_path}")
-            return True
+            self.log.info("检测到已有桌面客户端，将覆盖更新…")
+            # Kill running MicroClaw to release file locks
+            try:
+                self._run(
+                    ["taskkill", "/F", "/IM", "MicroClaw.exe"],
+                    capture_output=True, timeout=10,
+                )
+                time.sleep(1)
+            except Exception:
+                pass
+            shutil.rmtree(install_dir, ignore_errors=True)
 
         # 1. Try local bundled zip
         local_zip = self._find_local_desktop_zip()
@@ -1182,7 +1264,7 @@ class WindowsSetup:
                 f'{ico_arg}'
                 f'$s.Save()'
             )
-            subprocess.run(
+            self._run(
                 ["powershell", "-NoProfile", "-Command", ps_script],
                 capture_output=True, timeout=15,
             )
@@ -1219,7 +1301,7 @@ class WindowsSetup:
 
         url = f"http://127.0.0.1:{port}/"
         if token:
-            url += f"?token={token}"
+            url += f"#token={token}"
 
         shortcut_path = desktop / "MicroClaw.url"
         try:
@@ -1286,7 +1368,12 @@ class WindowsSetup:
     # ────────────────────── helpers ──────────────────────
 
     def _get_env(self) -> dict:
-        """Return env dict with our managed node + git in PATH."""
+        """Return env dict with our managed node + git in PATH.
+
+        Also redirects npm's global config to our managed dir so npm never
+        tries to read/write the system npmrc (avoids Access Denied on
+        system Node.js installs under C:\\Program Files).
+        """
         env = os.environ.copy()
         path_prefix = ""
         # Always put managed node dir first so our node.exe wins over system node
@@ -1298,6 +1385,22 @@ class WindowsSetup:
             path_prefix += self._git_bin + os.pathsep
         if path_prefix:
             env["PATH"] = path_prefix + env.get("PATH", "")
+
+        # Redirect npm global config to our managed dir
+        try:
+            global_npmrc_dir = self.node_dir / "etc"
+            global_npmrc_dir.mkdir(parents=True, exist_ok=True)
+            env["npm_config_globalconfig"] = str(global_npmrc_dir / "npmrc")
+        except Exception:
+            # Fall back: use temp dir if node_dir/etc is not writable
+            try:
+                import tempfile
+                fallback = Path(tempfile.gettempdir()) / "openclaw_npmrc"
+                fallback.mkdir(parents=True, exist_ok=True)
+                env["npm_config_globalconfig"] = str(fallback / "npmrc")
+            except Exception:
+                pass
+
         return env
 
     def _get_npm_path(self) -> str | None:
@@ -1318,7 +1421,7 @@ class WindowsSetup:
 
     def _get_node_version(self, node_path: str) -> str | None:
         try:
-            r = subprocess.run(
+            r = self._run(
                 [node_path, "--version"],
                 capture_output=True, text=True, encoding="utf-8",
                 timeout=10,

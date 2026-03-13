@@ -3,9 +3,19 @@
     <div class="view-header">
       <h2>定时任务</h2>
       <p class="view-desc">查看和管理 OpenClaw 中已配置的定时任务</p>
+      <el-button size="small" :loading="taskStore.loading" @click="taskStore.fetchTasks()" style="margin-top:8px">刷新</el-button>
     </div>
 
-    <div v-if="taskStore.tasks.length === 0" class="empty-state">
+    <div v-if="taskStore.error" class="empty-state">
+      <div class="empty-title">加载失败</div>
+      <div class="empty-desc">{{ taskStore.error }}</div>
+    </div>
+
+    <div v-else-if="taskStore.loading" class="empty-state">
+      <div class="empty-title">加载中…</div>
+    </div>
+
+    <div v-else-if="taskStore.tasks.length === 0" class="empty-state">
       <div class="empty-title">暂无定时任务</div>
       <div class="empty-desc">
         在 OpenClaw 配置中添加定时任务后，这里会自动显示。
@@ -39,9 +49,18 @@
 </template>
 
 <script setup lang="ts">
+import { onActivated, onMounted } from "vue";
 import { useTaskStore } from "@/stores/tasks";
 
 const taskStore = useTaskStore();
+
+onMounted(() => {
+  taskStore.fetchTasks();
+});
+
+onActivated(() => {
+  taskStore.fetchTasks();
+});
 </script>
 
 <style scoped>

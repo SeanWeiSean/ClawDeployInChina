@@ -15,11 +15,19 @@ export const useTaskStore = defineStore("tasks", () => {
   const tasks = ref<ScheduledTask[]>([]);
   const loading = ref(false);
 
+  const error = ref("");
+
   async function fetchTasks() {
     loading.value = true;
+    error.value = "";
     try {
+      // Wait briefly for gateway connection if not yet ready
+      const connected = await window.openclaw.chat.isConnected();
+      if (!connected) {
+        await new Promise((r) => setTimeout(r, 2000));
+      }
       const res = await window.openclaw.cron.list();
-      const jobs = Array.isArray(res.jobs) ? res.jobs : [];
+      const jobs = Array.isArray(res?.jobs) ? res.jobs : [];
       tasks.value = jobs.map((j: any) => {
         let cronExpr = "";
         if (j.schedule?.kind === "cron") cronExpr = j.schedule.expr || "";
@@ -36,12 +44,13 @@ export const useTaskStore = defineStore("tasks", () => {
           lastStatus: j.lastStatus,
         } as ScheduledTask;
       });
-    } catch (err) {
+    } catch (err: any) {
+      error.value = err?.message || String(err);
       console.error("[tasks] fetchTasks failed:", err);
     } finally {
       loading.value = false;
     }
   }
 
-  return { tasks, loading, fetchTasks };
+  return { tasks, loading, error, fetchTasks };
 });

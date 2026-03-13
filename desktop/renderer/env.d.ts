@@ -69,6 +69,9 @@ interface OpenClawAPI {
   channels: {
     list(): Promise<{ channels?: { id: string; name: string; icon: string; type: string; connected: boolean }[] }>;
   };
+  model: {
+    testConnection(params: { baseUrl: string; apiKey: string; apiFormat: string; modelName: string }): Promise<{ ok: boolean; message: string }>;
+  };
   window: {
     minimize(): Promise<void>;
     maximize(): Promise<void>;

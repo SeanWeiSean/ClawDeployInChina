@@ -97,6 +97,12 @@ contextBridge.exposeInMainWorld("openclaw", {
     list: () => ipcRenderer.invoke("channels:list"),
   },
 
+  // --- Model testing ---
+  model: {
+    testConnection: (params: { baseUrl: string; apiKey: string; apiFormat: string; modelName: string }) =>
+      ipcRenderer.invoke("model:test-connection", params),
+  },
+
   // --- Usage ---
   usage: {
     getStats: () => ipcRenderer.invoke("usage:get-stats"),

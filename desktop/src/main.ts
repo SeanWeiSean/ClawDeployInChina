@@ -168,14 +168,20 @@ async function startGateway(): Promise<void> {
   const configuredPort = config?.gateway?.port || 18789;
 
   // Check if a gateway is already running (e.g. started by deployer)
-  const existing = await checkExistingGateway(configuredPort);
-  if (existing) {
-    gatewayPort = configuredPort;
-    gatewayStatus = "running";
-    mainWindow?.webContents.send("gateway:status", "running");
-    console.log(`Connected to existing gateway on port ${configuredPort}`);
-    connectGatewayWs();
-    return;
+  // Retry a few times since gateway may still be starting up
+  for (let attempt = 0; attempt < 5; attempt++) {
+    const existing = await checkExistingGateway(configuredPort);
+    if (existing) {
+      gatewayPort = configuredPort;
+      gatewayStatus = "running";
+      mainWindow?.webContents.send("gateway:status", "running");
+      console.log(`Connected to existing gateway on port ${configuredPort}`);
+      connectGatewayWs();
+      return;
+    }
+    if (attempt < 4) {
+      await new Promise((r) => setTimeout(r, 3000));
+    }
   }
 
   // No existing gateway — start our own
@@ -263,6 +269,18 @@ function registerIpcHandlers(): void {
   ipcMain.handle("gateway:restart", async () => {
     if (gatewayManager) {
       gatewayPort = await gatewayManager.restart();
+    } else {
+      // External gateway (e.g. scheduled task) — restart via CLI async
+      const { exec } = require("child_process");
+      const run = (cmd: string, timeout: number) =>
+        new Promise<void>((resolve) => {
+          const child = exec(cmd, { timeout }, () => resolve());
+          child.on("error", () => resolve());
+        });
+      await run("openclaw daemon stop", 10000);
+      await run("openclaw daemon start", 15000);
+      // Reconnect WebSocket
+      connectGatewayWs();
     }
   });
 
@@ -351,6 +369,53 @@ function registerIpcHandlers(): void {
     } catch (err) {
       console.warn("[channels:list] failed:", err);
       return { channels: [] };
+    }
+  });
+
+  // --- Model connection test (runs in main process to avoid CORS) ---
+  ipcMain.handle("model:test-connection", async (_event, params: {
+    baseUrl: string; apiKey: string; apiFormat: string; modelName: string;
+  }) => {
+    const { baseUrl, apiKey, apiFormat, modelName } = params;
+    const base = baseUrl.replace(/\/$/, "");
+    try {
+      if (apiFormat === "anthropic") {
+        const res = await fetch(base + "/v1/messages", {
+          method: "POST",
+          headers: {
+            "Content-Type": "application/json",
+            "x-api-key": apiKey,
+            "anthropic-version": "2023-06-01",
+          },
+          body: JSON.stringify({
+            model: modelName || "claude-3-haiku-20240307",
+            max_tokens: 1,
+            messages: [{ role: "user", content: "hi" }],
+          }),
+        });
+        if (res.ok || res.status === 400) {
+          return { ok: true, message: "Connection successful (Anthropic)" };
+        }
+        return { ok: false, message: `Failed: HTTP ${res.status} ${res.statusText}` };
+      } else {
+        const headers: Record<string, string> = { "Content-Type": "application/json" };
+        if (apiKey) headers["Authorization"] = `Bearer ${apiKey}`;
+        const res = await fetch(base + "/chat/completions", {
+          method: "POST",
+          headers,
+          body: JSON.stringify({
+            model: modelName || "gpt-4o",
+            max_tokens: 1,
+            messages: [{ role: "user", content: "hi" }],
+          }),
+        });
+        if (res.ok || res.status === 400) {
+          return { ok: true, message: "Connection successful (OpenAI)" };
+        }
+        return { ok: false, message: `Failed: HTTP ${res.status} ${res.statusText}` };
+      }
+    } catch (err: any) {
+      return { ok: false, message: "Connection failed: " + (err.message || "Network error") };
     }
   });
 

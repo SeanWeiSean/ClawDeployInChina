@@ -2,7 +2,10 @@
   <div class="settings-view">
     <!-- Left sidebar: icon grid nav -->
     <div class="settings-sidebar">
-      <div class="settings-title">设置</div>
+      <div class="settings-title">
+        <button class="back-btn" @click="router.back()" title="返回">←</button>
+        设置
+      </div>
       <div class="menu-list">
         <div
           v-for="item in menuItems"
@@ -194,6 +197,7 @@
               <div class="custom-model-actions">
                 <span v-if="m.id === selectedModel" class="badge badge-green">Current Selection</span>
                 <el-button v-else size="small" @click="selectModel(m.id)">Select</el-button>
+                <el-button size="small" @click="editCustomModel(idx)">Edit</el-button>
                 <el-button size="small" type="danger" plain @click="removeCustomModel(idx)">Delete</el-button>
               </div>
             </div>
@@ -231,6 +235,39 @@
               <div style="display:flex;gap:8px">
                 <el-button @click="showAddModel = false">Cancel</el-button>
                 <el-button type="primary" @click="addCustomModel">Add</el-button>
+              </div>
+            </div>
+          </template>
+        </el-dialog>
+
+        <!-- Edit Custom Model dialog -->
+        <el-dialog v-model="showEditModel" title="Edit Custom Model" width="460px" :close-on-click-modal="false">
+          <el-form label-position="top" @submit.prevent>
+            <el-form-item label="Model Name">
+              <el-input v-model="editModel.name" placeholder="e.g. my-gpt-4o" />
+            </el-form-item>
+            <el-form-item label="Base URL">
+              <el-input v-model="editModel.baseUrl" placeholder="https://api.example.com/v1" />
+            </el-form-item>
+            <el-form-item label="API Key">
+              <el-input v-model="editModel.apiKey" type="password" show-password placeholder="sk-..." />
+            </el-form-item>
+            <el-form-item label="API Format">
+              <el-radio-group v-model="editModel.apiFormat">
+                <el-radio value="openai">Chat/Completion (OpenAI)</el-radio>
+                <el-radio value="anthropic">Anthropic</el-radio>
+              </el-radio-group>
+            </el-form-item>
+          </el-form>
+          <div class="test-result" v-if="editTestResult">
+            <span :class="editTestResult.ok ? 'test-ok' : 'test-fail'">{{ editTestResult.message }}</span>
+          </div>
+          <template #footer>
+            <div style="display:flex;justify-content:space-between;width:100%">
+              <el-button :loading="editTestLoading" @click="testEditModel">Test Connection</el-button>
+              <div style="display:flex;gap:8px">
+                <el-button @click="showEditModel = false">Cancel</el-button>
+                <el-button type="primary" @click="saveEditModel">Save</el-button>
               </div>
             </div>
           </template>
@@ -366,10 +403,12 @@
 
 <script setup lang="ts">
 import { ref, reactive, onMounted, watch, computed } from "vue";
+import { useRouter } from "vue-router";
 import { useGatewayStore } from "@/stores/gateway";
 import { useChatStore } from "@/stores/chat";
 import { ElMessage, ElMessageBox } from "element-plus";
 
+const router = useRouter();
 const gateway = useGatewayStore();
 const chatStore = useChatStore();
 
@@ -403,6 +442,12 @@ const showAddModel = ref(false);
 const newModel = reactive({ name: "", baseUrl: "", apiKey: "", apiFormat: "openai" as 'openai' | 'anthropic' });
 const testLoading = ref(false);
 const testResult = ref<{ ok: boolean; message: string } | null>(null);
+
+const showEditModel = ref(false);
+const editingIndex = ref(-1);
+const editModel = reactive({ name: "", baseUrl: "", apiKey: "", apiFormat: "openai" as 'openai' | 'anthropic' });
+const editTestLoading = ref(false);
+const editTestResult = ref<{ ok: boolean; message: string } | null>(null);
 
 const builtinSkills = ref<{ id: string; name: string; description: string }[]>([]);
 const customSkills = ref<{ id: string; name: string; description: string }[]>([]);
@@ -547,9 +592,11 @@ onMounted(async () => {
     // Gateway port
     gatewayPort.value = String(config.gateway?.port ?? (gateway.port || 18789));
 
-    // Selected model
+    // Selected model — strip "provider/" prefix if present
     const primary = config.agents?.defaults?.model?.primary;
-    if (primary) selectedModel.value = primary;
+    if (primary) {
+      selectedModel.value = primary.includes('/') ? primary.split('/').pop()! : primary;
+    }
 
     // Custom models from config
     const providers = config.models?.providers ?? {};
@@ -562,7 +609,7 @@ onMounted(async () => {
           name: m.name ?? m.id ?? key,
           baseUrl: val.baseUrl ?? "",
           apiKey: val.apiKey ?? "",
-          apiFormat: val.api === 'anthropic' ? 'anthropic' : 'openai',
+          apiFormat: val.api === 'anthropic-messages' ? 'anthropic' : 'openai',
         });
       }
     }
@@ -600,7 +647,7 @@ async function persistModelsConfig() {
     providerConfig[key] = {
       baseUrl: m.baseUrl || "",
       apiKey: m.apiKey || "",
-      api: m.apiFormat === 'anthropic' ? 'anthropic' : 'openai-chat',
+      api: m.apiFormat === 'anthropic' ? 'anthropic-messages' : 'openai-completions',
       models: [{ id: m.id, name: m.name }],
     };
   }
@@ -608,7 +655,11 @@ async function persistModelsConfig() {
   config.models = { mode: "merge", providers: providerConfig };
   config.agents = config.agents || {};
   config.agents.defaults = config.agents.defaults || {};
-  config.agents.defaults.model = { primary: selectedModel.value };
+  // OpenClaw expects primary in "provider/modelId" format
+  const sel = selectedModel.value;
+  const selKey = sel.replace(/[^a-zA-Z0-9_-]/g, "_");
+  const primary = providerConfig[selKey] ? `${selKey}/${sel}` : sel;
+  config.agents.defaults.model = { primary };
 
   await window.openclaw.config.write(config);
 }
@@ -651,7 +702,59 @@ async function addCustomModel() {
   newModel.apiKey = "";
   newModel.apiFormat = "openai";
   testResult.value = null;
+  selectedModel.value = name;
   await persistAndRestart("自定义模型已添加");
+}
+
+function editCustomModel(idx: number) {
+  const m = customModels.value[idx];
+  editingIndex.value = idx;
+  editModel.name = m.name;
+  editModel.baseUrl = m.baseUrl || "";
+  editModel.apiKey = m.apiKey || "";
+  editModel.apiFormat = m.apiFormat || "openai";
+  editTestResult.value = null;
+  showEditModel.value = true;
+}
+
+async function saveEditModel() {
+  const name = editModel.name.trim();
+  if (!name) { ElMessage.warning("Model name is required"); return; }
+  const baseUrl = editModel.baseUrl.trim();
+  if (!baseUrl) { ElMessage.warning("Base URL is required"); return; }
+  const idx = editingIndex.value;
+  if (idx < 0 || idx >= customModels.value.length) return;
+  customModels.value[idx] = {
+    id: name,
+    name,
+    baseUrl,
+    apiKey: editModel.apiKey.trim(),
+    apiFormat: editModel.apiFormat,
+  };
+  showEditModel.value = false;
+  selectedModel.value = name;
+  await persistAndRestart("自定义模型已更新");
+}
+
+async function testEditModel() {
+  const baseUrl = editModel.baseUrl.trim();
+  const apiKey = editModel.apiKey.trim();
+  if (!baseUrl) { ElMessage.warning("Base URL is required"); return; }
+  editTestLoading.value = true;
+  editTestResult.value = null;
+  try {
+    const result = await window.openclaw.model.testConnection({
+      baseUrl,
+      apiKey,
+      apiFormat: editModel.apiFormat,
+      modelName: editModel.name.trim(),
+    });
+    editTestResult.value = result;
+  } catch (err: any) {
+    editTestResult.value = { ok: false, message: 'Connection failed: ' + (err.message || 'Network error') };
+  } finally {
+    editTestLoading.value = false;
+  }
 }
 
 async function removeCustomModel(idx: number) {
@@ -670,36 +773,13 @@ async function testCustomModel() {
   testLoading.value = true;
   testResult.value = null;
   try {
-    if (newModel.apiFormat === 'anthropic') {
-      const res = await fetch(baseUrl.replace(/\/$/, '') + '/v1/messages', {
-        method: 'POST',
-        headers: {
-          'Content-Type': 'application/json',
-          'x-api-key': apiKey,
-          'anthropic-version': '2023-06-01',
-        },
-        body: JSON.stringify({ model: newModel.name.trim() || 'claude-3-haiku-20240307', max_tokens: 1, messages: [{ role: 'user', content: 'hi' }] }),
-      });
-      if (res.ok || res.status === 400) {
-        testResult.value = { ok: true, message: 'Connection successful (Anthropic)' };
-      } else {
-        testResult.value = { ok: false, message: `Failed: HTTP ${res.status} ${res.statusText}` };
-      }
-    } else {
-      const url = baseUrl.replace(/\/$/, '') + '/chat/completions';
-      const headers: Record<string, string> = { 'Content-Type': 'application/json' };
-      if (apiKey) headers['Authorization'] = `Bearer ${apiKey}`;
-      const res = await fetch(url, {
-        method: 'POST',
-        headers,
-        body: JSON.stringify({ model: newModel.name.trim() || 'gpt-4o', max_tokens: 1, messages: [{ role: 'user', content: 'hi' }] }),
-      });
-      if (res.ok || res.status === 400) {
-        testResult.value = { ok: true, message: 'Connection successful (OpenAI)' };
-      } else {
-        testResult.value = { ok: false, message: `Failed: HTTP ${res.status} ${res.statusText}` };
-      }
-    }
+    const result = await window.openclaw.model.testConnection({
+      baseUrl,
+      apiKey,
+      apiFormat: newModel.apiFormat,
+      modelName: newModel.name.trim(),
+    });
+    testResult.value = result;
   } catch (err: any) {
     testResult.value = { ok: false, message: 'Connection failed: ' + (err.message || 'Network error') };
   } finally {
@@ -785,6 +865,23 @@ async function clearChatHistory() {
   font-weight: 700;
   color: var(--text-primary);
   letter-spacing: -0.02em;
+  display: flex;
+  align-items: center;
+  gap: 8px;
+}
+
+.back-btn {
+  background: none;
+  border: 1px solid var(--border-color, #ddd);
+  border-radius: 6px;
+  cursor: pointer;
+  font-size: 16px;
+  padding: 4px 10px;
+  color: var(--text-primary);
+  transition: background 0.15s;
+}
+.back-btn:hover {
+  background: var(--bg-hover, #f0f0f0);
 }
 
 .menu-list {
