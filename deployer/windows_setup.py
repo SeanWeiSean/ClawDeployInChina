@@ -16,6 +16,7 @@ import time
 import urllib.request
 import zipfile
 from pathlib import Path
+from typing import Callable
 
 from deployer.logger import DeployerLogger
 
@@ -45,8 +46,16 @@ DEFAULT_NODE_DIR = Path(os.environ.get(
     str(Path.home() / ".openclaw-node"),
 ))
 
+DEFAULT_DESKTOP_DIR = Path(os.environ.get(
+    "MICROCLAW_DIR",
+    str(Path.home() / ".microclaw"),
+))
+
 # Strict pattern for version strings interpolated into URLs/commands
 _VERSION_RE = re.compile(r'^\d+(\.\d+){0,2}$')
+
+# Hide console windows spawned by subprocess on Windows
+_CREATE_NO_WINDOW = 0x08000000
 
 
 class WindowsSetup:
@@ -59,6 +68,7 @@ class WindowsSetup:
         self.node_dir = DEFAULT_NODE_DIR
         self._node_bin: Path | None = None
         self._git_bin: str | None = None  # path to git bin directory
+        self._rollback_actions: list[tuple[str, Callable]] = []
 
         # Select mirror based on npm.registry config
         registry = config.get("npm.registry", "")
@@ -70,6 +80,34 @@ class WindowsSetup:
         self._git_mirror_base = mirror["git_mirror_base"]
         mirror_name = "tencent" if "tencent" in registry.lower() else "npmmirror"
         self._mirror_name = mirror_name
+
+    # ────────────────────── Subprocess helper ──────────────────────
+
+    @staticmethod
+    def _run(cmd, **kwargs):
+        """Wrapper around subprocess.run that hides console windows on Windows."""
+        kwargs.setdefault("creationflags", _CREATE_NO_WINDOW)
+        return subprocess.run(cmd, **kwargs)
+
+    # ────────────────────── Rollback ──────────────────────
+
+    def _register_rollback(self, label: str, fn):
+        """Push a cleanup action onto the rollback stack."""
+        self._rollback_actions.append((label, fn))
+
+    def rollback(self):
+        """Execute all registered rollback actions in reverse order."""
+        if not self._rollback_actions:
+            return
+        self.log.step("正在清理已安装的组件…")
+        for label, fn in reversed(self._rollback_actions):
+            try:
+                self.log.info(f"  回滚: {label}")
+                fn()
+            except Exception as e:
+                self.log.warn(f"  回滚 '{label}' 失败: {e}")
+        self._rollback_actions.clear()
+        self.log.info("清理完成")
 
     # ────────────────────── Git ──────────────────────
 
@@ -119,7 +157,7 @@ class WindowsSetup:
                     zf.extractall(git_dir)
             else:
                 # PortableGit self-extracts with -o flag
-                subprocess.run(
+                self._run(
                     [str(dl_path), "-o" + str(git_dir), "-y"],
                     capture_output=True, text=True, timeout=120,
                 )
@@ -139,6 +177,11 @@ class WindowsSetup:
                 # Add to system PATH permanently
                 self._add_to_system_path(git_bin)
                 self.log.success(f"Git installed to {git_dir}")
+                # Register rollback
+                def _rollback_git(d=str(git_dir), b=git_bin):
+                    shutil.rmtree(d, ignore_errors=True)
+                    self._remove_from_system_path(b)
+                self._register_rollback("删除 Git", _rollback_git)
                 return True
 
             self.log.error("Git extraction failed — git.exe not found")
@@ -180,6 +223,22 @@ class WindowsSetup:
             winreg.CloseKey(key)
         except Exception as e:
             self.log.warn(f"  Could not update system PATH: {e}")
+
+    def _remove_from_system_path(self, directory: str):
+        """Remove a directory from system PATH via registry."""
+        try:
+            import winreg
+            key = winreg.OpenKey(
+                winreg.HKEY_LOCAL_MACHINE,
+                r"SYSTEM\CurrentControlSet\Control\Session Manager\Environment",
+                0, winreg.KEY_ALL_ACCESS,
+            )
+            current, _ = winreg.QueryValueEx(key, "Path")
+            parts = [p for p in current.split(";") if p.strip().lower() != directory.lower()]
+            winreg.SetValueEx(key, "Path", 0, winreg.REG_EXPAND_SZ, ";".join(parts))
+            winreg.CloseKey(key)
+        except Exception:
+            pass
 
     # ────────────────────── Node.js ──────────────────────
 
@@ -341,6 +400,10 @@ class WindowsSetup:
             ver = self._get_node_version(str(self.node_dir / "node.exe"))
             if ver:
                 self.log.success(f"Node.js {ver} installed to {self.node_dir}")
+                # Register rollback
+                def _rollback_node(d=str(self.node_dir)):
+                    shutil.rmtree(d, ignore_errors=True)
+                self._register_rollback("删除 Node.js", _rollback_node)
                 return True
 
             self.log.error("Node.js installed but verification failed")
@@ -431,7 +494,12 @@ class WindowsSetup:
     # ────────────────────── npm config ──────────────────────
 
     def setup_npm_mirror(self) -> bool:
-        """Set npm registry and global prefix."""
+        """Set npm registry and global prefix.
+
+        Redirects npm's global config path via npm_config_globalconfig env var
+        so that npm never touches the system npmrc (which may be under
+        C:\\Program Files and need admin privileges).
+        """
         registry = self.cfg.get("npm.registry", NPM_REGISTRY)
         self.log.step(f"Configuring npm registry ({registry})…")
         npm = self._get_npm_path()
@@ -441,17 +509,16 @@ class WindowsSetup:
         try:
             env = self._get_env()
 
-            # Ensure npm global prefix points to our managed dir
-            # so `npm install -g` puts openclaw.cmd there
+            # Set prefix so `npm install -g` puts openclaw.cmd in our dir
             try:
-                subprocess.run(
+                self._run(
                     [npm, "config", "set", "prefix", str(self.node_dir)],
                     capture_output=True, timeout=30, env=env,
                 )
             except Exception:
                 pass
 
-            r = subprocess.run(
+            r = self._run(
                 [npm, "config", "set", "registry", registry],
                 capture_output=True, text=True, encoding="utf-8", errors="replace",
                 timeout=30, env=env,
@@ -461,7 +528,7 @@ class WindowsSetup:
                 return False
 
             # Verify
-            r2 = subprocess.run(
+            r2 = self._run(
                 [npm, "config", "get", "registry"],
                 capture_output=True, text=True, encoding="utf-8", errors="replace",
                 timeout=10, env=env,
@@ -472,9 +539,23 @@ class WindowsSetup:
                 self.log.success(f"npm registry → {actual}  ✓")
             else:
                 self.log.warn(f"npm registry set to {actual} (expected {expected})")
+
+            # Register rollback
+            def _rollback_npm_mirror(npm_path=npm, env_copy=env.copy()):
+                try:
+                    WindowsSetup._run(
+                        [npm_path, "config", "set", "registry", "https://registry.npmjs.org/"],
+                        capture_output=True, timeout=30, env=env_copy,
+                    )
+                except Exception:
+                    pass
+            self._register_rollback("重置 npm 镜像源", _rollback_npm_mirror)
             return True
         except Exception as e:
             self.log.error(f"npm config failed: {e}")
+            self.log.info(f"  node_dir: {self.node_dir}")
+            self.log.info(f"  node_dir exists: {self.node_dir.exists()}")
+            self.log.info(f"  npm_config_globalconfig: {env.get('npm_config_globalconfig', 'NOT SET')}")
             return False
 
     # ────────────────────── OpenClaw ──────────────────────
@@ -489,7 +570,7 @@ class WindowsSetup:
             return False
         try:
             env = self._get_env()
-            r = subprocess.run(
+            r = self._run(
                 [npm, "list", "-g", "openclaw", "--depth=0"],
                 capture_output=True, text=True, encoding="utf-8", errors="replace",
                 timeout=30, env=env,
@@ -510,7 +591,7 @@ class WindowsSetup:
         """
         self.log.step("Checking PowerShell execution policy…")
         try:
-            r = subprocess.run(
+            r = self._run(
                 ["powershell", "-NoProfile", "-Command",
                  "Get-ExecutionPolicy -Scope CurrentUser"],
                 capture_output=True, text=True, timeout=10,
@@ -523,7 +604,7 @@ class WindowsSetup:
             pass
 
         try:
-            subprocess.run(
+            self._run(
                 ["powershell", "-NoProfile", "-Command",
                  "Set-ExecutionPolicy -Scope CurrentUser -ExecutionPolicy RemoteSigned -Force"],
                 capture_output=True, text=True, timeout=10,
@@ -548,7 +629,7 @@ class WindowsSetup:
             "git@github.com:",
         ]:
             try:
-                subprocess.run(
+                self._run(
                     [git, "config", "--global",
                      f"url.https://github.com/.insteadOf", pattern],
                     capture_output=True, text=True, timeout=10,
@@ -578,7 +659,7 @@ class WindowsSetup:
             env["NODE_LLAMA_CPP_SKIP_DOWNLOAD"] = "true"
             self.log.info("Set NODE_LLAMA_CPP_SKIP_DOWNLOAD=true")
 
-            r = subprocess.run(
+            r = self._run(
                 [npm, "install", "-g", f"openclaw@{tag}",
                  "--loglevel", "warn"],
                 capture_output=True, text=True, encoding="utf-8", errors="replace",
@@ -586,11 +667,13 @@ class WindowsSetup:
             )
             if r.returncode == 0:
                 self.log.success("OpenClaw installed on Windows")
+                self._register_rollback_openclaw(npm, env)
                 return True
             # npm warnings (EBADENGINE etc.) may still succeed
             if "added" in r.stderr.lower() or "openclaw" in r.stdout.lower():
                 self.log.warn(f"npm warnings: {r.stderr.strip()[-300:]}")
                 self.log.success("OpenClaw installed on Windows (with warnings)")
+                self._register_rollback_openclaw(npm, env)
                 return True
             # Log the TAIL of stderr (actual error is at the end, not the beginning)
             err_out = r.stderr.strip()
@@ -599,6 +682,18 @@ class WindowsSetup:
         except Exception as e:
             self.log.error(f"OpenClaw install failed: {e}")
             return False
+
+    def _register_rollback_openclaw(self, npm: str, env: dict):
+        """Register rollback action for OpenClaw npm uninstall."""
+        def _rollback_openclaw():
+            try:
+                WindowsSetup._run(
+                    [npm, "uninstall", "-g", "openclaw"],
+                    capture_output=True, timeout=120, env=env,
+                )
+            except Exception:
+                pass
+        self._register_rollback("卸载 OpenClaw", _rollback_openclaw)
 
     # ────────────────────── Configure + Gateway ──────────────────────
 
@@ -648,15 +743,6 @@ class WindowsSetup:
             for m in migrated:
                 self.log.info(f"  Config migration: {m}")
 
-        # ── Model: use custom provider via models.providers ──
-        existing["agents"] = {
-            "defaults": {
-                "model": {
-                    "primary": provider_model,
-                },
-            },
-        }
-
         # ── Gateway ──
         gw = existing.get("gateway", {})
         gw["port"] = port
@@ -672,53 +758,95 @@ class WindowsSetup:
         gw["auth"] = auth
         existing["gateway"] = gw
 
-        # ── Custom LiteLLM provider (openai-completions API) ──
-        # apiKey uses ${ENV_VAR} syntax so secrets stay in .env
-        api_url = base_url.rstrip("/")
-        if not api_url.endswith("/v1"):
-            api_url += "/v1"
+        # ── Model + provider: only write when api_key is configured ──
+        if api_key and base_url:
+            existing["agents"] = {
+                "defaults": {
+                    "model": {
+                        "primary": provider_model,
+                    },
+                },
+            }
 
-        existing["models"] = {
-            "mode": "merge",
-            "providers": {
-                "litellm": {
-                    "baseUrl": api_url,
-                    "apiKey": "${LITELLM_API_KEY}",
-                    "api": "openai-completions",
-                    "models": [
-                        {
-                            "id": bare_model,
-                            "name": bare_model,
-                            "reasoning": True,
-                            "input": ["text", "image"],
-                            "contextWindow": 200000,
-                            "maxTokens": 16384,
-                        }
-                    ],
-                }
-            },
-        }
+            # apiKey uses ${ENV_VAR} syntax so secrets stay in .env
+            api_url = base_url.rstrip("/")
+            if not api_url.endswith("/v1"):
+                api_url += "/v1"
+
+            existing["models"] = {
+                "mode": "merge",
+                "providers": {
+                    "litellm": {
+                        "baseUrl": api_url,
+                        "apiKey": "${LITELLM_API_KEY}",
+                        "api": "openai-completions",
+                        "models": [
+                            {
+                                "id": bare_model,
+                                "name": bare_model,
+                                "reasoning": True,
+                                "input": ["text", "image"],
+                                "contextWindow": 200000,
+                                "maxTokens": 16384,
+                            }
+                        ],
+                    }
+                },
+            }
+        else:
+            self.log.info("  No API key/base URL configured — skipping model provider")
+            # Remove any existing invalid model provider entries to prevent
+            # startup errors like "Invalid option" for api field
+            VALID_API_TYPES = {
+                "openai-completions", "openai-responses", "openai-codex-responses",
+                "anthropic-messages", "google-generative-ai", "github-copilot",
+                "bedrock-converse-stream", "ollama",
+            }
+            providers = existing.get("models", {}).get("providers", {})
+            invalid = [
+                name for name, cfg in providers.items()
+                if isinstance(cfg, dict) and cfg.get("api") not in VALID_API_TYPES
+            ]
+            for name in invalid:
+                self.log.warn(f"  Removing invalid model provider '{name}' "
+                              f"(api: {providers[name].get('api', '<missing>')})")
+                del providers[name]
+            if invalid and not providers:
+                existing.pop("models", None)
 
         try:
             config_path.write_text(json.dumps(existing, indent=2), encoding="utf-8")
             self.log.success(f"Config written to {config_path}")
-            self.log.info(f"  Model: {provider_model}")
-            self.log.info(f"  Provider: litellm → {api_url}")
-            self.log.info(f"  API type: openai-completions")
+            if api_key and base_url:
+                self.log.info(f"  Model: {provider_model}")
+                self.log.info(f"  Provider: litellm → {api_url}")
+                self.log.info(f"  API type: openai-completions")
+            else:
+                self.log.info("  Model provider not configured — configure later in desktop app")
         except Exception as e:
             self.log.error(f"Config write failed: {e}")
             return False
 
-        # ── .env file (secrets) ──
+        # ── .env file (secrets) — only write if api_key is set ──
         env_path = openclaw_dir / ".env"
-        try:
-            env_path.write_text(
-                f"LITELLM_API_KEY={api_key}\n",
-                encoding="utf-8",
-            )
-            self.log.success(f"Environment written to {env_path}")
-        except Exception as e:
-            self.log.warn(f"Env file write: {e}")
+        if api_key:
+            try:
+                env_path.write_text(
+                    f"LITELLM_API_KEY={api_key}\n",
+                    encoding="utf-8",
+                )
+                self.log.success(f"Environment written to {env_path}")
+            except Exception as e:
+                self.log.warn(f"Env file write: {e}")
+
+        # Register rollback
+        def _rollback_config(cp=str(config_path), ep=str(env_path)):
+            for p in (cp, ep):
+                try:
+                    Path(p).unlink(missing_ok=True)
+                except Exception:
+                    pass
+        self._register_rollback("删除配置文件", _rollback_config)
 
         return True
 
@@ -735,20 +863,30 @@ class WindowsSetup:
         if api_key:
             env["LITELLM_API_KEY"] = api_key
 
-        # Remove existing scheduled task to avoid conflicts
-        self._remove_existing_gateway_task()
-
         # Always elevate — schtasks create requires admin
+        # Remove + install are combined into one elevated script to avoid double UAC prompt
         try:
             openclaw_path = cmd[0]
             tmp_script = Path(tempfile.mktemp(suffix=".ps1", prefix="openclaw_gw_"))
             lines = [
-                f'$env:LITELLM_API_KEY = "{api_key}"',
+                "# Remove existing scheduled task to avoid conflicts",
+                "try {",
+                "    $existing = Get-ScheduledTask -TaskName 'OpenClaw Gateway' -ErrorAction SilentlyContinue",
+                "    if ($existing) {",
+                "        Unregister-ScheduledTask -TaskName 'OpenClaw Gateway' -Confirm:$false",
+                "    }",
+                "} catch {}",
+                "",
+            ]
+            if api_key:
+                lines.append(f'$env:LITELLM_API_KEY = "{api_key}"')
+            lines += [
                 f'& "{openclaw_path}" daemon install',
                 '',
-                '# Set scheduled task to hidden (no cmd window)',
+                '# Set scheduled task to run in background (no cmd window)',
                 "try {",
                 "    $task = Get-ScheduledTask -TaskName 'OpenClaw Gateway' -ErrorAction Stop",
+                "    $task.Principal.LogonType = 'S4U'",
                 "    $task.Settings.Hidden = $true",
                 "    Set-ScheduledTask -InputObject $task | Out-Null",
                 "} catch {}",
@@ -756,14 +894,27 @@ class WindowsSetup:
             ]
             tmp_script.write_text("\n".join(lines), encoding="utf-8")
 
-            subprocess.run(
+            self.log.info('  请在 UAC 弹窗中点击「是」以授权安装…')
+            self._run(
                 ["powershell", "-Command",
                  f'Start-Process powershell -Verb RunAs -Wait -WindowStyle Hidden '
                  f'-ArgumentList \'-ExecutionPolicy\', \'Bypass\', \'-File\', \'"{tmp_script}"\''],
-                capture_output=True, timeout=120,
+                capture_output=True, timeout=90,
             )
             tmp_script.unlink(missing_ok=True)
             self.log.success("Gateway service installed")
+            # Register rollback
+            def _rollback_gateway_task():
+                try:
+                    WindowsSetup._run(
+                        ["powershell", "-Command",
+                         "Start-Process powershell -Verb RunAs -Wait -WindowStyle Hidden "
+                         "-ArgumentList '-Command', 'Unregister-ScheduledTask -TaskName ''OpenClaw Gateway'' -Confirm:$false'"],
+                        capture_output=True, timeout=30,
+                    )
+                except Exception:
+                    pass
+            self._register_rollback("删除网关计划任务", _rollback_gateway_task)
             return True
         except Exception as e:
             self.log.error(f"Gateway install failed: {e}")
@@ -772,7 +923,7 @@ class WindowsSetup:
     def _remove_existing_gateway_task(self):
         """Delete existing 'OpenClaw Gateway' scheduled task if present."""
         try:
-            r = subprocess.run(
+            r = self._run(
                 ["powershell", "-Command",
                  "Get-ScheduledTask -TaskName 'OpenClaw Gateway' -ErrorAction SilentlyContinue"],
                 capture_output=True, text=True, timeout=15,
@@ -784,7 +935,7 @@ class WindowsSetup:
 
         self.log.info("  Removing existing 'OpenClaw Gateway' scheduled task…")
         try:
-            subprocess.run(
+            self._run(
                 ["powershell", "-Command",
                  "Start-Process powershell -Verb RunAs -Wait -WindowStyle Hidden "
                  "-ArgumentList '-Command', 'Unregister-ScheduledTask -TaskName ''OpenClaw Gateway'' -Confirm:$false'"],
@@ -794,16 +945,17 @@ class WindowsSetup:
             pass
 
     def _fix_gateway_task_background(self):
-        """Set the OpenClaw Gateway scheduled task to hidden."""
+        """Set the OpenClaw Gateway scheduled task to run in background."""
         try:
-            subprocess.run(
+            self._run(
                 ["powershell", "-Command",
                  "$task = Get-ScheduledTask -TaskName 'OpenClaw Gateway' -ErrorAction Stop; "
+                 "$task.Principal.LogonType = 'S4U'; "
                  "$task.Settings.Hidden = $true; "
                  "Set-ScheduledTask -InputObject $task | Out-Null"],
                 capture_output=True, timeout=15,
             )
-            self.log.info("  Scheduled task set to hidden mode")
+            self.log.info("  Scheduled task set to background mode")
         except Exception:
             pass
 
@@ -833,47 +985,57 @@ class WindowsSetup:
             pass
 
         try:
-            # Stop any running gateway and clean up stale lock files
+            # Stop any running gateway first
             try:
-                subprocess.run(
+                self._run(
                     cmd + ["daemon", "stop"],
                     capture_output=True, timeout=10, env=env,
                 )
             except Exception:
                 pass
 
-            # Remove stale lock files that prevent gateway from starting
-            import glob
-            lock_dir = Path.home() / "AppData" / "Local" / "Temp" / "openclaw"
-            for lock in lock_dir.glob("gateway.*.lock"):
-                try:
-                    lock.unlink()
-                    self.log.info(f"  Removed stale lock: {lock.name}")
-                except Exception:
-                    pass
-
             time.sleep(1)
 
-            # Start via daemon (runs the scheduled task)
-            r = subprocess.run(
+            # Try daemon start first (works if scheduled task exists)
+            # Fall back to direct gateway process if no task installed
+            started = False
+            r = self._run(
                 cmd + ["daemon", "start"],
                 capture_output=True, text=True, encoding="utf-8",
-                errors="replace", timeout=90, env=env,
+                errors="replace", timeout=30, env=env,
             )
             if r.returncode == 0:
                 self.log.info("  Gateway started via daemon")
+                started = True
             else:
-                out = (r.stdout + r.stderr).strip()
-                if out:
-                    for line in out.splitlines()[-3:]:
-                        self.log.info(f"  {line}")
-                self.log.warn("daemon start returned non-zero")
+                self.log.info("  daemon start failed, starting gateway directly…")
+
+            # Check if gateway is reachable after daemon start
+            if started:
+                time.sleep(3)
+                try:
+                    with socket.create_connection(("127.0.0.1", port), timeout=2):
+                        pass  # reachable
+                except (ConnectionRefusedError, OSError):
+                    started = False
+                    self.log.info("  daemon started but gateway not reachable, trying direct start…")
+
+            # Direct start as background process (no scheduled task needed)
+            if not started:
+                import subprocess as _sp
+                gw_proc = _sp.Popen(
+                    cmd + ["gateway"],
+                    env=env,
+                    stdout=_sp.DEVNULL, stderr=_sp.DEVNULL,
+                    creationflags=_sp.CREATE_NO_WINDOW | _sp.DETACHED_PROCESS,
+                )
+                self.log.info(f"  Gateway started directly (pid={gw_proc.pid})")
 
             dashboard_url = f"http://127.0.0.1:{port}/"
             self._dashboard_url = dashboard_url
             open_url = dashboard_url
             if self._gateway_token:
-                open_url = f"{dashboard_url}?token={self._gateway_token}"
+                open_url = f"{dashboard_url}#token={self._gateway_token}"
 
             # Wait for gateway to be reachable
             self.log.info("  Waiting for gateway to be ready…")
@@ -895,33 +1057,175 @@ class WindowsSetup:
                 self.log.warn("Gateway did not become reachable in 15s")
                 self.log.info(f"  Try manually: {open_url}")
 
+            # Register rollback
+            def _rollback_gateway_stop(c=cmd, e=env):
+                try:
+                    WindowsSetup._run(c + ["daemon", "stop"], capture_output=True, timeout=10, env=e)
+                except Exception:
+                    pass
+            self._register_rollback("停止网关", _rollback_gateway_stop)
+
             return ready
         except Exception as e:
             self.log.error(f"Gateway start failed: {e}")
             return False
 
-    def create_desktop_shortcut(self) -> bool:
-        """Create a desktop shortcut that opens the OpenClaw dashboard."""
-        self.log.step("Creating desktop shortcut…")
-        port = self.cfg.get("gateway.port", 18789)
+    # ────────────────────── Desktop Client ──────────────────────
 
-        # Read token from config
-        import json
-        config_path = Path.home() / ".openclaw" / "openclaw.json"
-        token = ""
+    def _find_local_desktop_zip(self) -> Path | None:
+        """Look for a bundled desktop zip in _MEIPASS, next to exe, or CWD."""
+        import sys
+        candidates = []
+        # Bundled inside PyInstaller exe (_MEIPASS)
+        if getattr(sys, 'frozen', False) and hasattr(sys, '_MEIPASS'):
+            candidates.append(Path(sys._MEIPASS) / "microclaw-portable.zip")
+        # Next to the exe (distribution scenario)
+        if getattr(sys, 'frozen', False):
+            candidates.append(Path(sys.executable).parent / "microclaw-portable.zip")
+        # CWD (development scenario)
+        candidates.append(Path.cwd() / "microclaw-portable.zip")
+        candidates.append(Path.cwd() / "dist" / "microclaw-portable.zip")
+        for p in candidates:
+            if p.exists():
+                return p
+        return None
+
+    def install_desktop_client(self) -> bool:
+        """Install MicroClaw (Electron portable).
+
+        Priority: local zip next to exe > network download.
+        """
+        install_dir = DEFAULT_DESKTOP_DIR
+
+        # If already installed, overwrite with bundled version
+        exe_path = install_dir / "MicroClaw.exe"
+        if exe_path.exists():
+            self.log.info("检测到已有桌面客户端，将覆盖更新…")
+            # Kill running MicroClaw to release file locks
+            try:
+                self._run(
+                    ["taskkill", "/F", "/IM", "MicroClaw.exe"],
+                    capture_output=True, timeout=10,
+                )
+                time.sleep(1)
+            except Exception:
+                pass
+            shutil.rmtree(install_dir, ignore_errors=True)
+
+        # 1. Try local bundled zip
+        local_zip = self._find_local_desktop_zip()
+        if local_zip:
+            self.log.step(f"从本地安装桌面客户端 ({local_zip.name})…")
+            return self._extract_desktop_zip(local_zip, install_dir)
+
+        # 2. Try network download
+        download_url = self.cfg.get("desktop.download_url", "")
+        if not download_url:
+            self.log.warn("未找到本地桌面客户端包，也未配置下载地址，跳过客户端安装")
+            return True  # Non-fatal
+
+        if not download_url.startswith(("https://", "http://")):
+            self.log.error(f"Invalid desktop download URL: {download_url!r}")
+            return False
+
+        self.log.step("下载 MicroClaw 桌面客户端…")
         try:
-            cfg_data = json.loads(config_path.read_text(encoding="utf-8"))
-            token = cfg_data.get("gateway", {}).get("auth", {}).get("token", "")
-        except Exception:
-            pass
+            tmp_dir = Path(tempfile.mkdtemp(prefix="microclaw_"))
+            zip_path = tmp_dir / "microclaw.zip"
+            self._download_with_progress(download_url, zip_path)
+            result = self._extract_desktop_zip(zip_path, install_dir)
+            shutil.rmtree(tmp_dir, ignore_errors=True)
+            return result
+        except Exception as e:
+            self.log.error(f"桌面客户端下载失败: {e}")
+            return False
 
-        url = f"http://127.0.0.1:{port}/"
-        if token:
-            url += f"?token={token}"
+    def _extract_desktop_zip(self, zip_path: Path, install_dir: Path) -> bool:
+        """Extract a desktop client zip to install_dir."""
+        if not zipfile.is_zipfile(zip_path):
+            self.log.error("文件不是有效的 zip 包")
+            return False
 
+        self.log.step("解压桌面客户端…")
+        install_dir.mkdir(parents=True, exist_ok=True)
+
+        try:
+            with zipfile.ZipFile(zip_path, "r") as zf:
+                zf.extractall(install_dir)
+        except Exception as e:
+            self.log.error(f"解压失败: {e}")
+            return False
+
+        exe_path = install_dir / "MicroClaw.exe"
+
+        # electron-builder portable may nest inside a subfolder
+        # e.g. "win-unpacked/" — detect and flatten if needed
+        subdirs = [d for d in install_dir.iterdir() if d.is_dir()]
+        if not exe_path.exists() and len(subdirs) == 1:
+            nested_exe = subdirs[0] / "MicroClaw.exe"
+            if nested_exe.exists():
+                for item in subdirs[0].iterdir():
+                    dest = install_dir / item.name
+                    if dest.exists():
+                        if dest.is_dir():
+                            shutil.rmtree(dest)
+                        else:
+                            dest.unlink()
+                    shutil.move(str(item), str(dest))
+                subdirs[0].rmdir()
+
+        if exe_path.exists():
+            self.log.success(f"桌面客户端安装到 {install_dir}")
+            def _rollback_desktop(d=str(install_dir)):
+                shutil.rmtree(d, ignore_errors=True)
+            self._register_rollback("删除桌面客户端", _rollback_desktop)
+            return True
+
+        # Try to find exe with different name
+        exes = list(install_dir.glob("*.exe"))
+        if exes:
+            self.log.success(f"桌面客户端安装到 {install_dir} (exe: {exes[0].name})")
+            def _rollback_desktop(d=str(install_dir)):
+                shutil.rmtree(d, ignore_errors=True)
+            self._register_rollback("删除桌面客户端", _rollback_desktop)
+            return True
+
+        self.log.error("解压后未找到可执行文件")
+        shutil.rmtree(install_dir, ignore_errors=True)
+        return False
+
+    def _find_desktop_exe(self) -> Path | None:
+        """Find the desktop client exe."""
+        install_dir = DEFAULT_DESKTOP_DIR
+        # Primary name
+        exe = install_dir / "MicroClaw.exe"
+        if exe.exists():
+            return exe
+        # Fallback: any exe in the directory
+        exes = list(install_dir.glob("*.exe"))
+        return exes[0] if exes else None
+
+    def create_desktop_shortcut(self) -> bool:
+        """Create a desktop shortcut for the MicroClaw client.
+
+        If the Electron client is installed, create a .lnk pointing to it.
+        Otherwise, fall back to a .url shortcut opening the gateway dashboard.
+        """
+        self.log.step("Creating desktop shortcut…")
+
+        desktop = self._get_desktop_path()
+        desktop_exe = self._find_desktop_exe()
+
+        if desktop_exe:
+            return self._create_lnk_shortcut(desktop, desktop_exe)
+        else:
+            self.log.info("桌面客户端未安装，创建浏览器快捷方式作为备选")
+            return self._create_url_shortcut(desktop)
+
+    def _get_desktop_path(self) -> Path:
+        """Resolve the user's Desktop folder path."""
         desktop = Path.home() / "Desktop"
         if not desktop.exists():
-            # Some localized Windows use a different Desktop path
             try:
                 import winreg
                 key = winreg.OpenKey(
@@ -933,46 +1237,109 @@ class WindowsSetup:
                 desktop = Path(os.path.expandvars(desktop_val))
             except Exception:
                 pass
+        return desktop
 
-        shortcut_path = desktop / "OpenClaw.url"
+    def _create_lnk_shortcut(self, desktop: Path, target_exe: Path) -> bool:
+        """Create a proper .lnk shortcut to the Electron app via PowerShell."""
+        shortcut_path = desktop / "MicroClaw.lnk"
+        # Remove stale .url shortcut if exists
+        stale_url = desktop / "OpenClaw.url"
+        stale_url.unlink(missing_ok=True)
+        stale_lnk = desktop / "OpenClaw.lnk"
+        stale_lnk.unlink(missing_ok=True)
+
         try:
-            # .url shortcut — simple, no COM dependency, works everywhere
-            shortcut_path.write_text(
-                f"[InternetShortcut]\n"
-                f"URL={url}\n"
-                f"IconIndex=0\n",
-                encoding="utf-8",
+            # Find icon
+            ico_path = self._resolve_icon()
+            ico_arg = ""
+            if ico_path:
+                ico_arg = f'$s.IconLocation = "{ico_path},0";'
+
+            ps_script = (
+                f'$ws = New-Object -ComObject WScript.Shell;'
+                f'$s = $ws.CreateShortcut("{shortcut_path}");'
+                f'$s.TargetPath = "{target_exe}";'
+                f'$s.WorkingDirectory = "{target_exe.parent}";'
+                f'$s.Description = "MicroClaw";'
+                f'{ico_arg}'
+                f'$s.Save()'
+            )
+            self._run(
+                ["powershell", "-NoProfile", "-Command", ps_script],
+                capture_output=True, timeout=15,
             )
 
-            # Also try to set a custom icon if openclaw.ico exists
-            import sys
-            ico_candidates = [
-                Path.home() / ".openclaw" / "openclaw.ico",
-                Path(__file__).parent.parent / "openclaw.ico",
-            ]
-            if getattr(sys, 'frozen', False):
-                ico_candidates.insert(0, Path(sys._MEIPASS) / "openclaw.ico")
-                ico_candidates.insert(1, Path(sys.executable).parent / "openclaw.ico")
-            for ico in ico_candidates:
-                if ico.exists():
-                    # Copy ico to .openclaw for persistence
-                    target_ico = Path.home() / ".openclaw" / "openclaw.ico"
-                    if not target_ico.exists():
-                        shutil.copy2(ico, target_ico)
-                    shortcut_path.write_text(
-                        f"[InternetShortcut]\n"
-                        f"URL={url}\n"
-                        f"IconFile={target_ico}\n"
-                        f"IconIndex=0\n",
-                        encoding="utf-8",
-                    )
-                    break
+            if shortcut_path.exists():
+                self.log.success(f"Desktop shortcut created: {shortcut_path}")
+                def _rollback_shortcut(p=str(shortcut_path)):
+                    try:
+                        Path(p).unlink(missing_ok=True)
+                    except Exception:
+                        pass
+                self._register_rollback("删除桌面快捷方式", _rollback_shortcut)
+                return True
 
+            self.log.warn("PowerShell shortcut creation returned but .lnk not found")
+            return self._create_url_shortcut(desktop)
+
+        except Exception as e:
+            self.log.warn(f"LNK shortcut failed ({e}), falling back to URL shortcut")
+            return self._create_url_shortcut(desktop)
+
+    def _create_url_shortcut(self, desktop: Path) -> bool:
+        """Fallback: create a .url shortcut to the gateway dashboard."""
+        port = self.cfg.get("gateway.port", 18789)
+
+        import json
+        config_path = Path.home() / ".openclaw" / "openclaw.json"
+        token = ""
+        try:
+            cfg_data = json.loads(config_path.read_text(encoding="utf-8"))
+            token = cfg_data.get("gateway", {}).get("auth", {}).get("token", "")
+        except Exception:
+            pass
+
+        url = f"http://127.0.0.1:{port}/"
+        if token:
+            url += f"#token={token}"
+
+        shortcut_path = desktop / "MicroClaw.url"
+        try:
+            content = f"[InternetShortcut]\nURL={url}\nIconIndex=0\n"
+            ico_path = self._resolve_icon()
+            if ico_path:
+                content = f"[InternetShortcut]\nURL={url}\nIconFile={ico_path}\nIconIndex=0\n"
+            shortcut_path.write_text(content, encoding="utf-8")
             self.log.success(f"Desktop shortcut created: {shortcut_path}")
+            def _rollback_shortcut(p=str(shortcut_path)):
+                try:
+                    Path(p).unlink(missing_ok=True)
+                except Exception:
+                    pass
+            self._register_rollback("删除桌面快捷方式", _rollback_shortcut)
             return True
         except Exception as e:
             self.log.warn(f"Could not create desktop shortcut: {e}")
             return True  # Non-fatal
+
+    def _resolve_icon(self) -> Path | None:
+        """Find and ensure openclaw.ico is in ~/.openclaw/."""
+        import sys
+        target_ico = Path.home() / ".openclaw" / "openclaw.ico"
+        if target_ico.exists():
+            return target_ico
+        candidates = [
+            Path(__file__).parent.parent / "openclaw.ico",
+        ]
+        if getattr(sys, 'frozen', False):
+            candidates.insert(0, Path(sys._MEIPASS) / "openclaw.ico")
+            candidates.insert(1, Path(sys.executable).parent / "openclaw.ico")
+        for ico in candidates:
+            if ico.exists():
+                target_ico.parent.mkdir(parents=True, exist_ok=True)
+                shutil.copy2(ico, target_ico)
+                return target_ico
+        return None
 
     def _find_openclaw_cmd(self) -> list[str] | None:
         """Find openclaw executable on Windows.
@@ -1001,7 +1368,12 @@ class WindowsSetup:
     # ────────────────────── helpers ──────────────────────
 
     def _get_env(self) -> dict:
-        """Return env dict with our managed node + git in PATH."""
+        """Return env dict with our managed node + git in PATH.
+
+        Also redirects npm's global config to our managed dir so npm never
+        tries to read/write the system npmrc (avoids Access Denied on
+        system Node.js installs under C:\\Program Files).
+        """
         env = os.environ.copy()
         path_prefix = ""
         # Always put managed node dir first so our node.exe wins over system node
@@ -1013,6 +1385,22 @@ class WindowsSetup:
             path_prefix += self._git_bin + os.pathsep
         if path_prefix:
             env["PATH"] = path_prefix + env.get("PATH", "")
+
+        # Redirect npm global config to our managed dir
+        try:
+            global_npmrc_dir = self.node_dir / "etc"
+            global_npmrc_dir.mkdir(parents=True, exist_ok=True)
+            env["npm_config_globalconfig"] = str(global_npmrc_dir / "npmrc")
+        except Exception:
+            # Fall back: use temp dir if node_dir/etc is not writable
+            try:
+                import tempfile
+                fallback = Path(tempfile.gettempdir()) / "openclaw_npmrc"
+                fallback.mkdir(parents=True, exist_ok=True)
+                env["npm_config_globalconfig"] = str(fallback / "npmrc")
+            except Exception:
+                pass
+
         return env
 
     def _get_npm_path(self) -> str | None:
@@ -1033,7 +1421,7 @@ class WindowsSetup:
 
     def _get_node_version(self, node_path: str) -> str | None:
         try:
-            r = subprocess.run(
+            r = self._run(
                 [node_path, "--version"],
                 capture_output=True, text=True, encoding="utf-8",
                 timeout=10,
@@ -1114,6 +1502,24 @@ class WindowsSetup:
             for d in added:
                 self.log.info(f"  Added to PATH: {d}")
             self.log.success("PATH updated (restart terminal to take effect)")
+
+            # Register rollback
+            def _rollback_path(dirs=list(added)):
+                try:
+                    import winreg
+                    key = winreg.OpenKey(
+                        winreg.HKEY_CURRENT_USER, r"Environment",
+                        0, winreg.KEY_READ | winreg.KEY_WRITE,
+                    )
+                    current, _ = winreg.QueryValueEx(key, "Path")
+                    parts = [p for p in current.split(";")
+                             if p.strip().lower() not in {d.lower() for d in dirs}]
+                    winreg.SetValueEx(key, "Path", 0, winreg.REG_EXPAND_SZ, ";".join(parts))
+                    winreg.CloseKey(key)
+                except Exception:
+                    pass
+            self._register_rollback("移除 PATH 条目", _rollback_path)
+
             return True
 
         except Exception as e:

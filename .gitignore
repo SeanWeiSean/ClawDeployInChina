@@ -46,3 +46,19 @@ Desktop.ini
 .DS_Store
 
 nssm.exe
+
+# Desktop (Electron + Vue)
+desktop/node_modules/
+desktop/renderer/node_modules/
+desktop/dist/
+desktop/renderer/dist/
+desktop/release/
+desktop/resources/
+
+# Claude
+.claude/
+
+# Debug logs
+*-debug.log
+
+# ═══════════════════════════════════════════════════════════

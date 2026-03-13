@@ -54,19 +54,17 @@ _load_dotenv()
 
 
 DEFAULT_CONFIG: dict[str, Any] = {
-    "wsl": {
-        "distro": "Ubuntu-24.04",
-        "enable_systemd": True,
-        "auto_start_at_boot": True,
-    },
     "node": {
         "version": "22",
-        "install_method": "nvm",  # nvm | nodesource
     },
     "openclaw": {
         "install_method": "npm",  # npm | source
         "channel": "stable",  # stable | beta | dev
         "install_daemon": True,
+    },
+    "desktop": {
+        "download_url": os.environ.get("MICROCLAW_URL", ""),
+        "version": "latest",
     },
     "model": {
         "provider": "anthropic",
