@@ -197,9 +197,9 @@ class DeployerApp(tk.Tk):
             (55, "安装 OpenClaw…",      ws.install_openclaw_windows),
             (65, "配置系统 PATH…",      ws.add_to_path),
             (75, "写入配置文件…",       ws.write_config),
-            (82, "安装网关服务…",       ws.run_onboard),
-            (90, "启动网关…",           ws.start_gateway),
-            (95, "创建桌面快捷方式…",   ws.create_desktop_shortcut),
+            (88, "启动网关…",           ws.start_gateway),
+            (93, "安装桌面客户端…",     ws.install_desktop_client),
+            (97, "创建桌面快捷方式…",   ws.create_desktop_shortcut),
             (97, "验证安装…",           self._verify),
         ]
 
