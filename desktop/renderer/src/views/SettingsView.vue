@@ -305,6 +305,18 @@
             </div>
           </div>
         </div>
+
+        <!-- Gateway Logs -->
+        <div class="sub-label-row" style="margin-top: 24px">
+          <span class="sub-label" style="margin-bottom:0">网关日志</span>
+          <el-button size="small" @click="gateway.logs = []">清空</el-button>
+        </div>
+        <div class="gateway-log-box">
+          <div v-if="gateway.logs.length === 0" class="gateway-log-empty">暂无日志</div>
+          <div v-else class="gateway-log-content" ref="logBoxRef">
+            <div v-for="(line, i) in gateway.logs" :key="i" class="gateway-log-line">{{ line }}</div>
+          </div>
+        </div>
       </div>
 
       <!-- Skills -->
@@ -387,13 +399,13 @@
         <div class="section-label">关于</div>
         <div class="about-card">
           <div class="about-icon">🦞</div>
-          <div class="about-name">MicroClaw</div>
+          <div class="about-name">MicroClawDesktop</div>
           <div class="about-version">版本 1.0.0</div>
         </div>
         <div class="card-group" style="margin-top: 16px">
           <div class="card-row no-border">
             <span class="row-label">版权</span>
-            <span class="row-value">© 2026 MicroClaw</span>
+            <span class="row-value">© 2026 MicroClawDesktop</span>
           </div>
         </div>
       </div>
@@ -402,7 +414,7 @@
 </template>
 
 <script setup lang="ts">
-import { ref, reactive, onMounted, watch, computed } from "vue";
+import { ref, reactive, onMounted, watch, computed, nextTick } from "vue";
 import { useRouter } from "vue-router";
 import { useGatewayStore } from "@/stores/gateway";
 import { useChatStore } from "@/stores/chat";
@@ -411,6 +423,16 @@ import { ElMessage, ElMessageBox } from "element-plus";
 const router = useRouter();
 const gateway = useGatewayStore();
 const chatStore = useChatStore();
+
+const logBoxRef = ref<HTMLElement | null>(null);
+
+watch(() => gateway.logs.length, () => {
+  nextTick(() => {
+    if (logBoxRef.value) {
+      logBoxRef.value.scrollTop = logBoxRef.value.scrollHeight;
+    }
+  });
+});
 
 const activeSection = ref("general");
 const stateDir = ref("");
@@ -1159,6 +1181,38 @@ async function clearChatHistory() {
   font-size: 13px;
   color: var(--text-muted);
   white-space: nowrap;
+}
+
+.gateway-log-box {
+  margin-top: 8px;
+  background: var(--bg-input);
+  border: 1px solid var(--border);
+  border-radius: 8px;
+  height: 240px;
+  overflow: hidden;
+  font-family: "Cascadia Code", "Fira Code", "Consolas", monospace;
+  font-size: 12px;
+}
+
+.gateway-log-empty {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  height: 100%;
+  color: var(--text-muted);
+}
+
+.gateway-log-content {
+  height: 100%;
+  overflow-y: auto;
+  padding: 10px 14px;
+}
+
+.gateway-log-line {
+  white-space: pre-wrap;
+  word-break: break-all;
+  line-height: 1.6;
+  color: var(--text-primary);
 }
 
 .port-input-group :deep(.el-input__wrapper) {

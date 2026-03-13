@@ -1091,20 +1091,20 @@ class WindowsSetup:
         return None
 
     def install_desktop_client(self) -> bool:
-        """Install MicroClaw (Electron portable).
+        """Install MicroClawDesktop (Electron portable).
 
         Priority: local zip next to exe > network download.
         """
         install_dir = DEFAULT_DESKTOP_DIR
 
         # If already installed, overwrite with bundled version
-        exe_path = install_dir / "MicroClaw.exe"
+        exe_path = install_dir / "MicroClawDesktop.exe"
         if exe_path.exists():
             self.log.info("检测到已有桌面客户端，将覆盖更新…")
-            # Kill running MicroClaw to release file locks
+            # Kill running MicroClawDesktop.exe to release file locks
             try:
                 self._run(
-                    ["taskkill", "/F", "/IM", "MicroClaw.exe"],
+                    ["taskkill", "/F", "/IM", "MicroClawDesktop.exe"],
                     capture_output=True, timeout=10,
                 )
                 time.sleep(1)
@@ -1128,7 +1128,7 @@ class WindowsSetup:
             self.log.error(f"Invalid desktop download URL: {download_url!r}")
             return False
 
-        self.log.step("下载 MicroClaw 桌面客户端…")
+        self.log.step("下载 MicroClawDesktop 桌面客户端…")
         try:
             tmp_dir = Path(tempfile.mkdtemp(prefix="microclaw_"))
             zip_path = tmp_dir / "microclaw.zip"
@@ -1156,13 +1156,13 @@ class WindowsSetup:
             self.log.error(f"解压失败: {e}")
             return False
 
-        exe_path = install_dir / "MicroClaw.exe"
+        exe_path = install_dir / "MicroClawDesktop.exe"
 
         # electron-builder portable may nest inside a subfolder
         # e.g. "win-unpacked/" — detect and flatten if needed
         subdirs = [d for d in install_dir.iterdir() if d.is_dir()]
         if not exe_path.exists() and len(subdirs) == 1:
-            nested_exe = subdirs[0] / "MicroClaw.exe"
+            nested_exe = subdirs[0] / "MicroClawDesktop.exe"
             if nested_exe.exists():
                 for item in subdirs[0].iterdir():
                     dest = install_dir / item.name
@@ -1198,7 +1198,7 @@ class WindowsSetup:
         """Find the desktop client exe."""
         install_dir = DEFAULT_DESKTOP_DIR
         # Primary name
-        exe = install_dir / "MicroClaw.exe"
+        exe = install_dir / "MicroClawDesktop.exe"
         if exe.exists():
             return exe
         # Fallback: any exe in the directory
@@ -1206,7 +1206,7 @@ class WindowsSetup:
         return exes[0] if exes else None
 
     def create_desktop_shortcut(self) -> bool:
-        """Create a desktop shortcut for the MicroClaw client.
+        """Create a desktop shortcut for the MicroClawDesktop client.
 
         If the Electron client is installed, create a .lnk pointing to it.
         Otherwise, fall back to a .url shortcut opening the gateway dashboard.
@@ -1241,7 +1241,7 @@ class WindowsSetup:
 
     def _create_lnk_shortcut(self, desktop: Path, target_exe: Path) -> bool:
         """Create a proper .lnk shortcut to the Electron app via PowerShell."""
-        shortcut_path = desktop / "MicroClaw.lnk"
+        shortcut_path = desktop / "MicroClawDesktop.lnk"
         # Remove stale .url shortcut if exists
         stale_url = desktop / "OpenClaw.url"
         stale_url.unlink(missing_ok=True)
@@ -1260,7 +1260,7 @@ class WindowsSetup:
                 f'$s = $ws.CreateShortcut("{shortcut_path}");'
                 f'$s.TargetPath = "{target_exe}";'
                 f'$s.WorkingDirectory = "{target_exe.parent}";'
-                f'$s.Description = "MicroClaw";'
+                f'$s.Description = "MicroClawDesktop";'
                 f'{ico_arg}'
                 f'$s.Save()'
             )
@@ -1303,7 +1303,7 @@ class WindowsSetup:
         if token:
             url += f"#token={token}"
 
-        shortcut_path = desktop / "MicroClaw.url"
+        shortcut_path = desktop / "MicroClawDesktop.url"
         try:
             content = f"[InternetShortcut]\nURL={url}\nIconIndex=0\n"
             ico_path = self._resolve_icon()
@@ -1321,6 +1321,104 @@ class WindowsSetup:
         except Exception as e:
             self.log.warn(f"Could not create desktop shortcut: {e}")
             return True  # Non-fatal
+
+    # ────────────────────── Uninstall ──────────────────────
+
+    def uninstall(self) -> bool:
+        """Full uninstall: stop services, run openclaw uninstall, clean up."""
+        env = self._get_env()
+        cmd = self._find_openclaw_cmd()
+
+        # 1. Stop daemon
+        if cmd:
+            self.log.step("停止守护进程…")
+            try:
+                self._run(cmd + ["daemon", "stop"],
+                          capture_output=True, timeout=15, env=env)
+            except Exception:
+                pass
+
+        # 2. Stop gateway
+        if cmd:
+            self.log.step("停止网关服务…")
+            try:
+                self._run(cmd + ["gateway", "stop"],
+                          capture_output=True, timeout=15, env=env)
+            except Exception:
+                pass
+
+        # 3. Kill desktop client
+        self.log.step("关闭桌面客户端…")
+        try:
+            self._run(["taskkill", "/F", "/IM", "MicroClawDesktop.exe"],
+                      capture_output=True, timeout=10)
+        except Exception:
+            pass
+        time.sleep(1)
+
+        # 4. openclaw uninstall --all --yes --non-interactive
+        uninstalled = False
+        if cmd:
+            self.log.step("执行 openclaw uninstall…")
+            try:
+                r = self._run(
+                    cmd + ["uninstall", "--all", "--yes", "--non-interactive"],
+                    capture_output=True, text=True, encoding="utf-8",
+                    errors="replace", timeout=120, env=env,
+                )
+                if r.returncode == 0:
+                    uninstalled = True
+                    self.log.success("openclaw uninstall 完成")
+            except Exception as e:
+                self.log.warn(f"openclaw uninstall 失败: {e}")
+
+        # 5. Fallback: npx
+        if not uninstalled:
+            self.log.step("使用 npx 执行卸载…")
+            npx = self._find_npx()
+            if npx:
+                try:
+                    self._run(
+                        npx + ["-y", "openclaw", "uninstall", "--all", "--yes", "--non-interactive"],
+                        capture_output=True, text=True, encoding="utf-8",
+                        errors="replace", timeout=120, env=env,
+                    )
+                    self.log.success("npx openclaw uninstall 完成")
+                except Exception as e:
+                    self.log.warn(f"npx 卸载失败: {e}")
+
+        # 6. Remove desktop client
+        self.log.step("删除桌面客户端…")
+        install_dir = DEFAULT_DESKTOP_DIR
+        if install_dir.exists():
+            shutil.rmtree(install_dir, ignore_errors=True)
+            self.log.info(f"  已删除 {install_dir}")
+
+        # 7. Remove desktop shortcuts
+        self.log.step("删除快捷方式…")
+        desktop = self._get_desktop_path()
+        for name in ("MicroClawDesktop.lnk", "MicroClawDesktop.url",
+                      "MicroClaw.lnk", "MicroClaw.url",
+                      "OpenClaw.lnk", "OpenClaw.url"):
+            p = desktop / name
+            if p.exists():
+                p.unlink(missing_ok=True)
+                self.log.info(f"  已删除 {p.name}")
+
+        self.log.success("卸载完成")
+        return True
+
+    def _find_npx(self) -> list[str] | None:
+        """Find npx executable."""
+        for search_dir in filter(None, [self._node_bin, self.node_dir]):
+            for name in ("npx.cmd", "npx"):
+                p = search_dir / name
+                if p.exists():
+                    return [str(p)]
+        found = shutil.which("npx")
+        if found:
+            return [found]
+        return None
 
     def _resolve_icon(self) -> Path | None:
         """Find and ensure openclaw.ico is in ~/.openclaw/."""
@@ -1460,6 +1558,9 @@ class WindowsSetup:
             dirs_to_add.append(str(npm_global))
 
         if not dirs_to_add:
+            if self._node_bin and shutil.which("node"):
+                self.log.info("Node.js already in PATH; no directories to add")
+                return True
             self.log.warn("No directories to add to PATH")
             return False
 
