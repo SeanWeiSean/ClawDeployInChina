@@ -1,10 +1,10 @@
 @echo off
 REM ═══════════════════════════════════════════════════════
-REM  OpenClaw Deployer — Windows Launcher
+REM  MicroClaw Deployer — Windows Launcher
 REM  Double-click this file to start the deployment GUI.
 REM ═══════════════════════════════════════════════════════
 
-title OpenClaw Deployer
+title MicroClaw Deployer
 
 REM Check Python
 python --version >nul 2>&1

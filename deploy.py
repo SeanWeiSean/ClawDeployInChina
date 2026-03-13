@@ -1,6 +1,6 @@
 #!/usr/bin/env python3
 """
-OpenClaw Deployer — One-click installer
+MicroClaw Deployer — One-click installer
 =========================================
 Clean minimal UI: one button to install, one to cancel.
 All configuration is read from .env + defaults.
@@ -41,7 +41,7 @@ class DeployerApp(tk.Tk):
 
     def __init__(self):
         super().__init__()
-        self.title("OpenClaw Installer")
+        self.title("MicroClaw Installer")
         self.configure(bg=BG)
         self.geometry("480x400")
         self.resizable(False, False)
@@ -69,7 +69,7 @@ class DeployerApp(tk.Tk):
         tk.Label(container, text="🦞", font=("Segoe UI Emoji", 48),
                  bg=BG, fg=FG).pack(pady=(0, 4))
 
-        tk.Label(container, text="OpenClaw", font=("Segoe UI", 24, "bold"),
+        tk.Label(container, text="MicroClaw", font=("Segoe UI", 24, "bold"),
                  bg=BG, fg=FG).pack()
 
         self._subtitle = tk.Label(container, text="一键安装 AI 助手到您的电脑",
@@ -170,7 +170,7 @@ class DeployerApp(tk.Tk):
         def _do():
             self._progress["value"] = 100
             self._status_label.config(text="✓  安装完成！", fg=SUCCESS)
-            self._subtitle.config(text="OpenClaw 已就绪，浏览器即将打开")
+            self._subtitle.config(text="MicroClaw 已就绪，浏览器即将打开")
             self._install_btn.config(state="normal", text="完成", bg=SUCCESS,
                                       command=self.destroy)
             self._cancel_btn.pack_forget()
@@ -194,7 +194,7 @@ class DeployerApp(tk.Tk):
             (15, "检查 Node.js…",       ws.check_node_windows),
             (30, "安装 Node.js…",       ws.install_node_windows),
             (40, "配置 npm 镜像…",      ws.setup_npm_mirror),
-            (55, "安装 OpenClaw…",      ws.install_openclaw_windows),
+            (55, "安装 MicroClaw…",      ws.install_openclaw_windows),
             (65, "配置系统 PATH…",      ws.add_to_path),
             (75, "写入配置文件…",       ws.write_config),
             (88, "启动网关…",           ws.start_gateway),
@@ -297,10 +297,10 @@ class DeployerApp(tk.Tk):
         import sys
         candidates = []
         if getattr(sys, 'frozen', False):
-            candidates.append(Path(sys._MEIPASS) / "openclaw.ico")
-            candidates.append(Path(sys.executable).parent / "openclaw.ico")
-        candidates.append(Path.cwd() / "openclaw.ico")
-        candidates.append(Path(__file__).parent / "openclaw.ico")
+            candidates.append(Path(sys._MEIPASS) / "microclaw.ico")
+            candidates.append(Path(sys.executable).parent / "microclaw.ico")
+        candidates.append(Path.cwd() / "microclaw.ico")
+        candidates.append(Path(__file__).parent / "microclaw.ico")
         for ico in candidates:
             if ico.exists():
                 try:
