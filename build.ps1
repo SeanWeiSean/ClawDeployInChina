@@ -24,5 +24,5 @@ pyinstaller OpenClawDeployer.spec --noconfirm
 Pop-Location
 
 Write-Host "`n=== Done ===" -ForegroundColor Green
-Write-Host "  Installer: $root\dist\MicroClaw.exe"
+Write-Host "  Installer: $root\dist\MicroClawDeployer.exe"
 Write-Host "  Portable:  $zipPath"

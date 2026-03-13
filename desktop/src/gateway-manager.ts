@@ -3,6 +3,7 @@ import { EventEmitter } from "events";
 import * as path from "path";
 import * as net from "net";
 import * as http from "http";
+import * as fs from "fs";
 import { app } from "electron";
 
 const CREATE_NO_WINDOW = 0x08000000;
@@ -20,25 +21,30 @@ export class GatewayManager extends EventEmitter {
     this.stateDir = stateDir;
   }
 
-  /** Resolve path to bundled node.exe */
+  /** Resolve path to node.exe */
   private getNodePath(): string {
+    // 1. Bundled in packaged app resources
     if (app.isPackaged) {
-      return path.join(process.resourcesPath, "node.exe");
+      const bundled = path.join(process.resourcesPath, "node.exe");
+      if (fs.existsSync(bundled)) return bundled;
     }
-    // Dev: use openclaw-node's bundled node first, fall back to system node
+    // 2. Deployer-installed node
     const ocNode = process.env.USERPROFILE
       ? path.join(process.env.USERPROFILE, ".openclaw-node", "node.exe")
       : "";
-    if (ocNode && require("fs").existsSync(ocNode)) return ocNode;
+    if (ocNode && fs.existsSync(ocNode)) return ocNode;
+    // 3. System node
     return "node";
   }
 
-  /** Resolve path to bundled openclaw entry */
+  /** Resolve path to openclaw entry */
   private getOpenClawEntry(): string {
+    // 1. Bundled in packaged app resources
     if (app.isPackaged) {
-      return path.join(process.resourcesPath, "openclaw", "openclaw.mjs");
+      const bundled = path.join(process.resourcesPath, "openclaw", "openclaw.mjs");
+      if (fs.existsSync(bundled)) return bundled;
     }
-    // Dev: check .openclaw-node install first, then npm global
+    // 2. Deployer-installed or npm global
     const candidates = [
       process.env.USERPROFILE
         ? path.join(process.env.USERPROFILE, ".openclaw-node", "node_modules", "openclaw", "dist", "index.js")
@@ -53,11 +59,10 @@ export class GatewayManager extends EventEmitter {
         ? path.join(process.env.APPDATA, "npm", "node_modules", "openclaw", "openclaw.mjs")
         : "",
     ];
-    const fs = require("fs");
     for (const p of candidates) {
       if (p && fs.existsSync(p)) return p;
     }
-    return candidates[0]; // will fail with a clear error
+    return candidates[0];
   }
 
   /** Find a free port */
@@ -137,12 +142,18 @@ export class GatewayManager extends EventEmitter {
       windowsHide: true,
     };
 
-    // On Windows, use CREATE_NO_WINDOW to prevent console window flash
+    // On Windows, use CREATE_NO_WINDOW to prevent console window
     if (process.platform === "win32") {
       spawnOpts.creationFlags = CREATE_NO_WINDOW;
     }
 
     this.process = spawn(nodePath, args, spawnOpts);
+
+    this.process.on("error", (err: Error) => {
+      this.emit("log", `Gateway spawn error: ${err.message}`);
+      this.process = null;
+      this.emit("status", "failed");
+    });
 
     this.process.stdout?.on("data", (data: Buffer) => {
       const msg = data.toString().trim();
