@@ -11,6 +11,12 @@
 
 import WebSocket from "ws";
 import { randomUUID } from "crypto";
+import {
+  loadOrCreateDeviceIdentity,
+  signDevicePayload,
+  buildDeviceAuthPayload,
+  type DeviceIdentity,
+} from "./device-identity.js";
 
 // ── Types ───────────────────────────────────────────────────────────────
 
@@ -61,8 +67,11 @@ export class GatewayClient {
   private connectNonce: string | null = null;
   private connectSent = false;
   private connectTimer: ReturnType<typeof setTimeout> | null = null;
+  private deviceIdentity: DeviceIdentity;
 
-  constructor(private opts: GatewayClientOptions) {}
+  constructor(private opts: GatewayClientOptions) {
+    this.deviceIdentity = loadOrCreateDeviceIdentity();
+  }
 
   get connected() {
     return this._connected;
@@ -139,9 +148,7 @@ export class GatewayClient {
     if (this.closed) return;
 
     const url = `ws://127.0.0.1:${this.opts.port}/`;
-    this.ws = new WebSocket(url, {
-      headers: { Origin: `http://127.0.0.1:${this.opts.port}` },
-    });
+    this.ws = new WebSocket(url);
     this.connectNonce = null;
     this.connectSent = false;
 
@@ -187,17 +194,43 @@ export class GatewayClient {
     }
     if (!this.ws || this.ws.readyState !== WebSocket.OPEN) return;
 
+    const role = "operator";
+    const scopes = ["operator.admin", "operator.read", "operator.write"];
+    const clientId = "gateway-client";
+    const clientMode = "backend";
+    const nonce = this.connectNonce ?? "";
+    const signedAtMs = Date.now();
+
+    const payload = buildDeviceAuthPayload({
+      deviceId: this.deviceIdentity.deviceId,
+      clientId,
+      clientMode,
+      role,
+      scopes,
+      signedAtMs,
+      token: this.opts.token || null,
+      nonce,
+    });
+    const signature = signDevicePayload(this.deviceIdentity.privateKey, payload);
+
     const params: Record<string, unknown> = {
       minProtocol: 3,
       maxProtocol: 3,
       client: {
-        id: "gateway-client",
+        id: clientId,
         version: "1.0.0",
         platform: process.platform,
-        mode: "backend",
+        mode: clientMode,
       },
-      role: "operator",
-      scopes: ["operator.admin", "operator.read", "operator.write"],
+      role,
+      scopes,
+      device: {
+        id: this.deviceIdentity.deviceId,
+        publicKey: this.deviceIdentity.publicKey,
+        signature,
+        signedAt: signedAtMs,
+        nonce,
+      },
       caps: ["tool-events"],
     };
 
