@@ -8,7 +8,7 @@
           :key="tab.id"
           class="segment-btn"
           :class="{ active: activeTab === tab.id }"
-          @click="activeTab = tab.id"
+          @click="switchTab(tab.id)"
           :title="tab.label"
         >
           {{ tab.label }}
@@ -122,6 +122,12 @@ const tabs = [
 ];
 
 const activeTab = ref("sessions");
+
+function switchTab(tabId: string) {
+  activeTab.value = tabId;
+  if (tabId === "channels") router.push("/channels");
+  else if (tabId === "tasks") router.push("/tasks");
+}
 
 const gatewayStatusClass = computed(() => ({
   running: gateway.status === "running",

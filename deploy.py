@@ -43,7 +43,7 @@ class DeployerApp(tk.Tk):
         super().__init__()
         self.title("OpenClaw Installer")
         self.configure(bg=BG)
-        self.geometry("480x400")
+        self.geometry("560x600")
         self.resizable(False, False)
 
         self._set_icon()
@@ -129,6 +129,45 @@ class DeployerApp(tk.Tk):
             padx=36, pady=10, cursor="hand2", relief="flat")
         self._cancel_btn.pack(side="left", padx=8)
 
+        # Uninstall button (red)
+        self._uninstall_btn = tk.Button(
+            container, text="\u5378\u8f7d OpenClaw", command=self._on_uninstall,
+            bg=ERROR, fg="#ffffff", activebackground="#cc2b22",
+            activeforeground="#ffffff",
+            font=("Segoe UI", 11, "bold"), bd=0,
+            padx=24, pady=6, cursor="hand2", relief="flat")
+        self._uninstall_btn.pack(pady=(12, 0))
+
+        # Log output area (hidden initially)
+        self._log_frame = tk.Frame(container, bg=BG)
+
+        tk.Label(self._log_frame, text="\u8f93\u51fa\u65e5\u5fd7",
+                 font=("Segoe UI", 9), bg=BG, fg=FG_DIM, anchor="w"
+                 ).pack(fill="x", padx=4)
+
+        self._log_text = tk.Text(
+            self._log_frame, height=10, width=62,
+            bg="#1e1e1e", fg="#cccccc", insertbackground="#cccccc",
+            font=("Consolas", 9), bd=0, relief="flat",
+            state="disabled", wrap="word", padx=8, pady=6)
+        self._log_text.pack(fill="both", expand=True)
+
+        # Hook logger to push lines into the text widget
+        self.logger.add_listener(self._append_log_line)
+
+    def _append_log_line(self, line: str):
+        """Thread-safe append to the log text widget."""
+        def _do():
+            self._log_text.config(state="normal")
+            self._log_text.insert("end", line + "\n")
+            self._log_text.see("end")
+            self._log_text.config(state="disabled")
+        self.after(0, _do)
+
+    def _show_log(self):
+        """Show the log area."""
+        self._log_frame.pack(pady=(12, 0), fill="both", expand=True)
+
     # ───────────────────── Actions ─────────────────────
 
     def _on_install(self):
@@ -139,6 +178,7 @@ class DeployerApp(tk.Tk):
         self._install_btn.config(state="disabled", bg="#b0b0b0")
         self._subtitle.config(text="正在安装，请稍候…")
         self._progress_frame.pack(pady=(0, 20))
+        self._show_log()
         self._progress["value"] = 0
         self._status_label.config(text="准备中…", fg=FG_DIM)
 
@@ -157,6 +197,27 @@ class DeployerApp(tk.Tk):
             self._status_label.config(text="正在取消…", fg=FG_DIM)
         else:
             self.destroy()
+
+    def _on_uninstall(self):
+        if self._running:
+            return
+        if not messagebox.askyesno(
+            "确认卸载",
+            "确定要卸载 OpenClaw 及桌面客户端吗？\n\n此操作将停止所有服务并删除相关文件。",
+            icon="warning",
+        ):
+            return
+        self._running = True
+        self._install_btn.config(state="disabled", bg="#b0b0b0")
+        self._uninstall_btn.config(state="disabled")
+        self._subtitle.config(text="正在卸载，请稍候…")
+        self._progress_frame.pack(pady=(0, 20))
+        self._show_log()
+        self._progress["value"] = 0
+        self._progress.config(mode="indeterminate")
+        self._progress.start(15)
+        self._status_label.config(text="正在卸载…", fg=FG_DIM)
+        threading.Thread(target=self._uninstall_thread, daemon=True).start()
 
     # ───────────────────── Install thread ─────────────────────
 
@@ -197,9 +258,8 @@ class DeployerApp(tk.Tk):
             (55, "安装 OpenClaw…",      ws.install_openclaw_windows),
             (65, "配置系统 PATH…",      ws.add_to_path),
             (75, "写入配置文件…",       ws.write_config),
-            (88, "启动网关…",           ws.start_gateway),
-            (93, "安装桌面客户端…",     ws.install_desktop_client),
-            (97, "创建桌面快捷方式…",   ws.create_desktop_shortcut),
+            (85, "安装桌面客户端…",     ws.install_desktop_client),
+            (93, "创建桌面快捷方式…",   ws.create_desktop_shortcut),
             (97, "验证安装…",           self._verify),
         ]
 
@@ -254,6 +314,42 @@ class DeployerApp(tk.Tk):
 
         self._running = False
         self._finish_ok()
+
+    def _uninstall_thread(self):
+        log = self.logger
+        ws = WindowsSetup(self.config, log)
+        try:
+            ws.uninstall()
+            self._running = False
+            self._finish_uninstall_ok()
+        except Exception as e:
+            log.error(f"卸载异常: {e}")
+            self._running = False
+            self._finish_uninstall_fail(str(e))
+
+    def _finish_uninstall_ok(self):
+        def _do():
+            self._progress.stop()
+            self._progress.config(mode="determinate")
+            self._progress["value"] = 100
+            self._status_label.config(text="✓  卸载完成", fg=SUCCESS)
+            self._subtitle.config(text="OpenClaw 已从您的电脑中移除")
+            self._install_btn.config(state="normal", text="关闭", bg=SUCCESS,
+                                      command=self.destroy)
+            self._cancel_btn.pack_forget()
+            self._uninstall_btn.pack_forget()
+        self.after(0, _do)
+
+    def _finish_uninstall_fail(self, msg: str):
+        def _do():
+            self._progress.stop()
+            self._progress.config(mode="determinate")
+            self._status_label.config(text=f"✗  卸载失败: {msg}", fg=ERROR)
+            self._subtitle.config(text="卸载遇到问题")
+            self._install_btn.config(state="normal", text="重试", bg=ACCENT,
+                                      command=self._on_uninstall)
+            self._uninstall_btn.config(state="normal")
+        self.after(0, _do)
 
     def _verify(self) -> bool:
         cmd = self._find_openclaw_cmd()
