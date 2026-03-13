@@ -109,7 +109,7 @@ function createMainWindow(): BrowserWindow {
     x: savedBounds?.x,
     y: savedBounds?.y,
     title: "MicroClawDesktop",
-    icon: path.join(__dirname, "../assets/image.png"),
+    icon: path.join(__dirname, "../assets/microclaw.png"),
     show: false,
     webPreferences: {
       preload: path.join(__dirname, "preload.js"),
@@ -185,7 +185,7 @@ async function startGateway(): Promise<void> {
   }
 
   // No existing gateway — start our own
-  gatewayManager = new GatewayManager(getOpenClawStateDir());
+  gatewayManager = new GatewayManager(getOpenClawStateDir(), configuredPort);
 
   const trayCallbacks = {
     onShowWindow: () => {

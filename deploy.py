@@ -37,6 +37,24 @@ BTN_CANCEL   = "#e0e0e0"
 # ═══════════════════════════════════════════════════════════════
 # Main Application
 # ═══════════════════════════════════════════════════════════════
+def _setup_windows_taskbar():
+    """Set AppUserModelID and DPI awareness so the taskbar icon is crisp."""
+    import ctypes
+    try:
+        ctypes.windll.shell32.SetCurrentProcessExplicitAppUserModelID(
+            "ai.openclaw.microclaw.installer"
+        )
+    except Exception:
+        pass
+    try:
+        ctypes.windll.shcore.SetProcessDpiAwareness(1)
+    except Exception:
+        try:
+            ctypes.windll.user32.SetProcessDPIAware()
+        except Exception:
+            pass
+
+
 class DeployerApp(tk.Tk):
 
     def __init__(self):
@@ -66,8 +84,12 @@ class DeployerApp(tk.Tk):
         container.grid(row=0, column=0)
 
         # Logo / Title
-        tk.Label(container, text="🦞", font=("Segoe UI Emoji", 48),
-                 bg=BG, fg=FG).pack(pady=(0, 4))
+        self._logo_image = self._load_logo()
+        if self._logo_image:
+            tk.Label(container, image=self._logo_image, bg=BG).pack(pady=(0, 4))
+        else:
+            tk.Label(container, text="🦞", font=("Segoe UI Emoji", 48),
+                     bg=BG, fg=FG).pack(pady=(0, 4))
 
         tk.Label(container, text="MicroClaw", font=("Segoe UI", 24, "bold"),
                  bg=BG, fg=FG).pack()
@@ -131,7 +153,7 @@ class DeployerApp(tk.Tk):
 
         # Uninstall button (red)
         self._uninstall_btn = tk.Button(
-            container, text="\u5378\u8f7d OpenClaw", command=self._on_uninstall,
+            container, text="\u5378\u8f7d MicroClaw", command=self._on_uninstall,
             bg=ERROR, fg="#ffffff", activebackground="#cc2b22",
             activeforeground="#ffffff",
             font=("Segoe UI", 11, "bold"), bd=0,
@@ -203,7 +225,7 @@ class DeployerApp(tk.Tk):
             return
         if not messagebox.askyesno(
             "确认卸载",
-            "确定要卸载 OpenClaw 及桌面客户端吗？\n\n此操作将停止所有服务并删除相关文件。",
+            "确定要卸载 MicroClaw 及桌面客户端吗？\n\n此操作将停止所有服务并删除相关文件。",
             icon="warning",
         ):
             return
@@ -333,7 +355,7 @@ class DeployerApp(tk.Tk):
             self._progress.config(mode="determinate")
             self._progress["value"] = 100
             self._status_label.config(text="✓  卸载完成", fg=SUCCESS)
-            self._subtitle.config(text="OpenClaw 已从您的电脑中移除")
+            self._subtitle.config(text="MicroClaw 已从您的电脑中移除")
             self._install_btn.config(state="normal", text="关闭", bg=SUCCESS,
                                       command=self.destroy)
             self._cancel_btn.pack_forget()
@@ -389,6 +411,29 @@ class DeployerApp(tk.Tk):
                 return [str(p)]
         return None
 
+    def _load_logo(self):
+        """Load microclaw.png for the home screen logo, scaled to fit."""
+        import sys
+        candidates = []
+        if getattr(sys, 'frozen', False):
+            candidates.append(Path(sys._MEIPASS) / "microclaw.png")
+            candidates.append(Path(sys.executable).parent / "microclaw.png")
+        candidates.append(Path.cwd() / "microclaw.png")
+        candidates.append(Path(__file__).parent / "microclaw.png")
+        for png in candidates:
+            if png.exists():
+                try:
+                    img = tk.PhotoImage(file=str(png))
+                    # Scale down large images to ~128px height
+                    h = img.height()
+                    if h > 160:
+                        factor = h // 128
+                        img = img.subsample(factor, factor)
+                    return img
+                except Exception:
+                    pass
+        return None
+
     def _set_icon(self):
         import sys
         candidates = []
@@ -429,5 +474,6 @@ def _ensure_admin():
 
 
 if __name__ == "__main__":
+    _setup_windows_taskbar()
     app = DeployerApp()
     app.mainloop()

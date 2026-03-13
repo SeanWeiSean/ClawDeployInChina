@@ -16,9 +16,10 @@ export class GatewayManager extends EventEmitter {
   private maxRestarts: number = 3;
   private stopping: boolean = false;
 
-  constructor(stateDir: string) {
+  constructor(stateDir: string, port?: number) {
     super();
     this.stateDir = stateDir;
+    if (port) this.port = port;
   }
 
   /** Resolve path to node.exe */
@@ -44,19 +45,19 @@ export class GatewayManager extends EventEmitter {
       const bundled = path.join(process.resourcesPath, "openclaw", "openclaw.mjs");
       if (fs.existsSync(bundled)) return bundled;
     }
-    // 2. Deployer-installed or npm global
+    // 2. Deployer-installed or npm global — prefer openclaw.mjs (CLI entry) over dist/index.js
     const candidates = [
-      process.env.USERPROFILE
-        ? path.join(process.env.USERPROFILE, ".openclaw-node", "node_modules", "openclaw", "dist", "index.js")
-        : "",
       process.env.USERPROFILE
         ? path.join(process.env.USERPROFILE, ".openclaw-node", "node_modules", "openclaw", "openclaw.mjs")
         : "",
-      process.env.APPDATA
-        ? path.join(process.env.APPDATA, "npm", "node_modules", "openclaw", "dist", "index.js")
+      process.env.USERPROFILE
+        ? path.join(process.env.USERPROFILE, ".openclaw-node", "node_modules", "openclaw", "dist", "index.js")
         : "",
       process.env.APPDATA
         ? path.join(process.env.APPDATA, "npm", "node_modules", "openclaw", "openclaw.mjs")
+        : "",
+      process.env.APPDATA
+        ? path.join(process.env.APPDATA, "npm", "node_modules", "openclaw", "dist", "index.js")
         : "",
     ];
     for (const p of candidates) {
@@ -65,21 +66,22 @@ export class GatewayManager extends EventEmitter {
     return candidates[0];
   }
 
-  /** Find a free port */
-  private findFreePort(): Promise<number> {
-    return new Promise((resolve, reject) => {
-      const server = net.createServer();
-      server.listen(0, "127.0.0.1", () => {
-        const addr = server.address();
-        if (addr && typeof addr === "object") {
-          const port = addr.port;
-          server.close(() => resolve(port));
-        } else {
-          server.close(() => reject(new Error("Failed to get port")));
-        }
+  /** Wait until the port is available (not held by another process) */
+  private async waitForPortAvailable(timeoutMs: number = 30000): Promise<void> {
+    const start = Date.now();
+    while (Date.now() - start < timeoutMs) {
+      const inUse = await new Promise<boolean>((resolve) => {
+        const server = net.createServer();
+        server.once("error", () => resolve(true));
+        server.listen(this.port, "127.0.0.1", () => {
+          server.close(() => resolve(false));
+        });
       });
-      server.on("error", reject);
-    });
+      if (!inUse) return;
+      this.emit("log", `Port ${this.port} in use, waiting...`);
+      await new Promise((r) => setTimeout(r, 2000));
+    }
+    this.emit("log", `Port ${this.port} still in use after ${timeoutMs / 1000}s, starting anyway with --force`);
   }
 
   /** Check if gateway is ready */
@@ -115,10 +117,29 @@ export class GatewayManager extends EventEmitter {
     this.stopping = false;
     this.emit("status", "starting");
 
-    this.port = await this.findFreePort();
+    await this.waitForPortAvailable();
 
     const nodePath = this.getNodePath();
     const entryPath = this.getOpenClawEntry();
+
+    // Log resolved paths for diagnostics
+    const nodeExists = fs.existsSync(nodePath);
+    const entryExists = fs.existsSync(entryPath);
+    this.emit("log", `Node: ${nodePath} (exists: ${nodeExists})`);
+    this.emit("log", `Entry: ${entryPath} (exists: ${entryExists})`);
+    this.emit("log", `State dir: ${this.stateDir}`);
+    this.emit("log", `Port: ${this.port}`);
+
+    if (!nodeExists) {
+      this.emit("log", `ERROR: node.exe not found at ${nodePath}`);
+      this.emit("status", "failed");
+      return this.port;
+    }
+    if (!entryExists) {
+      this.emit("log", `ERROR: openclaw entry not found at ${entryPath}`);
+      this.emit("status", "failed");
+      return this.port;
+    }
 
     const args = [
       entryPath,
@@ -133,6 +154,7 @@ export class GatewayManager extends EventEmitter {
     ];
 
     const spawnOpts: any = {
+      cwd: path.dirname(entryPath),
       env: {
         ...process.env,
         OPENCLAW_STATE_DIR: this.stateDir,
@@ -146,6 +168,9 @@ export class GatewayManager extends EventEmitter {
     if (process.platform === "win32") {
       spawnOpts.creationFlags = CREATE_NO_WINDOW;
     }
+
+    this.emit("log", `Spawning: ${nodePath} ${args.join(" ")}`);
+    let stderrBuffer = "";
 
     this.process = spawn(nodePath, args, spawnOpts);
 
@@ -162,11 +187,18 @@ export class GatewayManager extends EventEmitter {
 
     this.process.stderr?.on("data", (data: Buffer) => {
       const msg = data.toString().trim();
-      if (msg) this.emit("log", `[stderr] ${msg}`);
+      if (msg) {
+        stderrBuffer += msg + "\n";
+        this.emit("log", `[stderr] ${msg}`);
+      }
     });
 
     this.process.on("exit", (code, signal) => {
       this.emit("log", `Gateway exited: code=${code} signal=${signal}`);
+      if (stderrBuffer) {
+        this.emit("log", `Last stderr output:\n${stderrBuffer.slice(-1000)}`);
+      }
+      stderrBuffer = "";
       this.process = null;
 
       if (!this.stopping && this.restartCount < this.maxRestarts) {
