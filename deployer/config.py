@@ -76,6 +76,17 @@ DEFAULT_CONFIG: dict[str, Any] = {
         "port": 18789,
         "bind": "loopback",
     },
+    # Skill whitelist controls.
+    # enable: set to true to activate skill restrictions (default off = no restrictions).
+    # allowBundled: restrict bundled skills to this list (empty = no restriction).
+    # allowManaged: whitelist for managed/workspace skills; skills NOT in this list get
+    #   disabled via skills.entries.<name>.enabled=false in openclaw.json.
+    #   An empty list with enable=true disables ALL managed/workspace skills.
+    "skills": {
+        "enable": True,
+        "allowBundled": [],
+        "allowManaged": [],
+    },
     "logging": {
         "log_dir": "./logs",
         "verbose": True,

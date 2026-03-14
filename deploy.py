@@ -17,6 +17,8 @@ from pathlib import Path
 
 from deployer.config import DeployerConfig
 from deployer.logger import DeployerLogger
+from deployer.skill_catalog import get_certified_skills
+from deployer.skill_manager_ui import SkillManagerDialog
 from deployer.windows_setup import WindowsSetup, DEFAULT_NODE_DIR
 
 # ═══════════════════════════════════════════════════════════════
@@ -70,6 +72,7 @@ class DeployerApp(tk.Tk):
         self.logger = DeployerLogger()
         self._running = False
         self._failed = False
+        self._selected_skills: list[str] | None = None  # None = use certified default
 
         self._build_ui()
 
@@ -112,6 +115,21 @@ class DeployerApp(tk.Tk):
             state="readonly", width=18, font=("Segoe UI", 10))
         mirror_menu.current(0)
         mirror_menu.pack(side="left")
+
+        # Advanced options button
+        adv_frame = tk.Frame(container, bg=BG)
+        adv_frame.pack(pady=(0, 16))
+
+        self._adv_btn = tk.Button(
+            adv_frame, text="⚙ 高级选项：技能管理", command=self._on_skill_manager,
+            bg=BG_CARD, fg=FG_DIM, activebackground="#e8e8e8",
+            font=("Segoe UI", 10), bd=1, relief="solid",
+            padx=16, pady=4, cursor="hand2")
+        self._adv_btn.pack()
+
+        self._skill_status = tk.Label(
+            adv_frame, text="", font=("Segoe UI", 9), bg=BG, fg=FG_DIM)
+        self._skill_status.pack(pady=(4, 0))
 
         # Progress area (hidden initially)
         self._progress_frame = tk.Frame(container, bg=BG)
@@ -192,6 +210,15 @@ class DeployerApp(tk.Tk):
 
     # ───────────────────── Actions ─────────────────────
 
+    def _on_skill_manager(self):
+        preselected = self._selected_skills if self._selected_skills is not None else get_certified_skills()
+        dialog = SkillManagerDialog(self, preselected=preselected)
+        self.wait_window(dialog)
+        if dialog.result is not None:
+            self._selected_skills = dialog.result
+            n = len(dialog.result)
+            self._skill_status.config(text=f"已选择 {n} 个技能")
+
     def _on_install(self):
         if self._running:
             return
@@ -210,6 +237,11 @@ class DeployerApp(tk.Tk):
             self.config.set("npm.registry", "http://mirrors.cloud.tencent.com/npm/")
         else:
             self.config.set("npm.registry", "https://registry.npmmirror.com")
+
+        # Apply skill selection
+        skills = self._selected_skills if self._selected_skills is not None else get_certified_skills()
+        self.config.set("skills.enable", True)
+        self.config.set("skills.allowBundled", skills)
 
         threading.Thread(target=self._install_thread, daemon=True).start()
 
