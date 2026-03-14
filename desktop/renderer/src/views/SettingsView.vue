@@ -345,24 +345,60 @@
       <div v-if="activeSection === 'skills'" class="section">
         <div class="section-label">技能管理</div>
 
-        <!-- Built-in Skills -->
-        <div class="sub-label" style="margin-top:0">Built-in Skills ({{ builtinSkills.length }})</div>
-        <div class="card-group">
-          <template v-if="builtinSkills.length">
-            <div
-              v-for="(skill, idx) in builtinSkills"
-              :key="skill.id"
-              class="card-row"
-              :class="{ 'no-border': idx === builtinSkills.length - 1 }"
-            >
-              <div class="skill-info">
+        <!-- Built-in Skills header -->
+        <div style="display:flex; align-items:center; justify-content:space-between; margin-bottom:8px">
+          <span class="sub-label" style="margin:0">Built-in Skills ({{ builtinSkills.length }})</span>
+          <span class="skill-count-label">{{ enabledCount }}/{{ builtinSkills.length }} 已启用</span>
+        </div>
+
+        <!-- Certified Skills -->
+        <div v-if="certifiedSkills.length" class="sub-label" style="font-size:12px; margin-top:4px">已认证 ({{ certifiedSkills.length }})</div>
+        <div v-if="certifiedSkills.length" class="card-group">
+          <div
+            v-for="(skill, idx) in certifiedSkills"
+            :key="skill.id"
+            class="card-row"
+            :class="{ 'no-border': idx === certifiedSkills.length - 1 }"
+          >
+            <div class="skill-info">
+              <div style="display:flex; align-items:center; gap:8px">
                 <span class="row-label">{{ skill.name }}</span>
-                <span class="skill-desc">{{ skill.description }}</span>
+                <span class="badge badge-green">已认证</span>
               </div>
-              <span class="badge badge-green">Built-in</span>
+              <span class="skill-desc">{{ skill.description }}</span>
             </div>
-          </template>
-          <div v-else class="card-row no-border placeholder-row">
+            <el-switch
+              :model-value="skill.enabled"
+              @change="(val: boolean) => toggleSkill(skill.id, val)"
+            />
+          </div>
+        </div>
+
+        <!-- Uncertified Skills -->
+        <div v-if="uncertifiedSkills.length" class="sub-label" style="font-size:12px">未认证 ({{ uncertifiedSkills.length }})</div>
+        <div v-if="uncertifiedSkills.length" class="card-group">
+          <div
+            v-for="(skill, idx) in uncertifiedSkills"
+            :key="skill.id"
+            class="card-row"
+            :class="{ 'no-border': idx === uncertifiedSkills.length - 1 }"
+          >
+            <div class="skill-info">
+              <div style="display:flex; align-items:center; gap:8px">
+                <span class="row-label">{{ skill.name }}</span>
+                <span class="badge badge-orange">未认证</span>
+              </div>
+              <span class="skill-desc">{{ skill.description }}</span>
+            </div>
+            <el-switch
+              :model-value="skill.enabled"
+              @change="(val: boolean) => toggleSkill(skill.id, val)"
+            />
+          </div>
+        </div>
+
+        <div v-if="!builtinSkills.length" class="card-group">
+          <div class="card-row no-border placeholder-row">
             <span class="placeholder-text">未检测到内置技能</span>
           </div>
         </div>
@@ -494,8 +530,36 @@ const editModel = reactive({ name: "", baseUrl: "", apiKey: "", apiFormat: "open
 const editTestLoading = ref(false);
 const editTestResult = ref<{ ok: boolean; message: string } | null>(null);
 
-const builtinSkills = ref<{ id: string; name: string; description: string }[]>([]);
-const customSkills = ref<{ id: string; name: string; description: string }[]>([]);
+const builtinSkills = ref<SkillEntry[]>([]);
+const customSkills = ref<SkillEntry[]>([]);
+
+const certifiedSkills = computed(() =>
+  builtinSkills.value.filter(s => s.certified).sort((a, b) => a.name.localeCompare(b.name))
+);
+const uncertifiedSkills = computed(() =>
+  builtinSkills.value.filter(s => !s.certified).sort((a, b) => a.name.localeCompare(b.name))
+);
+const enabledCount = computed(() =>
+  builtinSkills.value.filter(s => s.enabled).length
+);
+
+async function toggleSkill(skillId: string, enabled: boolean) {
+  const skill = builtinSkills.value.find(s => s.id === skillId);
+  if (skill) skill.enabled = enabled;
+
+  const allowBundled = builtinSkills.value
+    .filter(s => s.enabled)
+    .map(s => s.id);
+
+  try {
+    await window.openclaw.skills.updateAllowlist(allowBundled);
+    await window.openclaw.gateway.restart();
+    ElMessage.success("技能配置已更新，网关正在重启…");
+  } catch (err: any) {
+    if (skill) skill.enabled = !enabled;
+    ElMessage.error("技能配置更新失败: " + (err.message || err));
+  }
+}
 
 // --- Brave Search API ---
 const braveApiKey = ref("");
@@ -1326,6 +1390,17 @@ async function clearChatHistory() {
   background: rgba(0, 122, 255, 0.12);
   color: #007aff;
   border: 1px solid rgba(0, 122, 255, 0.25);
+}
+
+.badge-orange {
+  background: rgba(255, 149, 0, 0.12);
+  color: #ff9500;
+  border: 1px solid rgba(255, 149, 0, 0.25);
+}
+
+.skill-count-label {
+  font-size: 12px;
+  color: var(--text-muted);
 }
 
 /* Usage section */

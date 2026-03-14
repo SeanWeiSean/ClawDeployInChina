@@ -300,6 +300,19 @@ function registerIpcHandlers(): void {
     const builtinDir = path.join(homeDir, ".openclaw-node", "node_modules", "openclaw", "skills");
     const customDir = path.join(homeDir, ".agents", "skills");
 
+    // Load certification catalog
+    let catalog: Record<string, { description: string; certified: boolean }> = {};
+    try {
+      const catalogPath = path.join(getOpenClawStateDir(), "skill_catalog.json");
+      if (fs.existsSync(catalogPath)) {
+        catalog = JSON.parse(fs.readFileSync(catalogPath, "utf-8"));
+      }
+    } catch { /* catalog unavailable — all skills show as uncertified */ }
+
+    // Load allowBundled from config
+    const config = readConfig();
+    const allowBundled: string[] | undefined = config?.skills?.allowBundled;
+
     function scanSkills(dir: string, source: "builtin" | "custom"): any[] {
       const results: any[] = [];
       if (!fs.existsSync(dir)) return results;
@@ -315,7 +328,14 @@ function registerIpcHandlers(): void {
           if (nameMatch) name = nameMatch[1].trim();
           if (descMatch) description = descMatch[1].replace(/^["']|["']$/g, "").trim();
         }
-        results.push({ id: entry.name, name, description, source });
+
+        const certified = catalog[entry.name]?.certified ?? false;
+        let enabled = true;
+        if (source === "builtin" && allowBundled && allowBundled.length > 0) {
+          enabled = allowBundled.includes(entry.name);
+        }
+
+        results.push({ id: entry.name, name, description, source, certified, enabled });
       }
       return results;
     }
@@ -324,6 +344,15 @@ function registerIpcHandlers(): void {
       builtin: scanSkills(builtinDir, "builtin"),
       custom: scanSkills(customDir, "custom"),
     };
+  });
+
+  ipcMain.handle("skills:update-allowlist", (_event, allowBundled: string[]) => {
+    const config = readConfig() || {};
+    if (!config.skills) config.skills = {};
+    config.skills.allowBundled = allowBundled;
+    const stateDir = getOpenClawStateDir();
+    fs.mkdirSync(stateDir, { recursive: true });
+    fs.writeFileSync(getConfigPath(), JSON.stringify(config, null, 2), "utf-8");
   });
 
   // --- Chat (WebSocket gateway protocol) ---

@@ -86,3 +86,8 @@ def get_certified_skills() -> list[str]:
 def get_all_skill_names() -> list[str]:
     """Return all skill names sorted alphabetically."""
     return sorted(SKILL_CATALOG.keys())
+
+
+def export_catalog_json() -> dict[str, dict]:
+    """Return the full catalog as a JSON-serializable dict."""
+    return {k: dict(v) for k, v in SKILL_CATALOG.items()}

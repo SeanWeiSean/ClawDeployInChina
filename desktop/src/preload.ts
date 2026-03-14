@@ -46,6 +46,8 @@ contextBridge.exposeInMainWorld("openclaw", {
   // --- Skills ---
   skills: {
     list: () => ipcRenderer.invoke("skills:list"),
+    updateAllowlist: (allowBundled: string[]) =>
+      ipcRenderer.invoke("skills:update-allowlist", allowBundled),
   },
 
   // --- Chat (session-based via WebSocket gateway protocol) ---

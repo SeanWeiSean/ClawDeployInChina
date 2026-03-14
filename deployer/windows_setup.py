@@ -19,6 +19,7 @@ from pathlib import Path
 from typing import Callable
 
 from deployer.logger import DeployerLogger
+from deployer.skill_catalog import export_catalog_json
 
 # ── Mirror URLs ──
 MIRRORS = {
@@ -865,6 +866,17 @@ class WindowsSetup:
         except Exception as e:
             self.log.error(f"Config write failed: {e}")
             return False
+
+        # ── Skill catalog (certification metadata for desktop app) ──
+        catalog_path = openclaw_dir / "skill_catalog.json"
+        try:
+            catalog_path.write_text(
+                json.dumps(export_catalog_json(), indent=2, ensure_ascii=False),
+                encoding="utf-8",
+            )
+            self.log.success(f"Skill catalog written to {catalog_path}")
+        except Exception as e:
+            self.log.warn(f"Skill catalog write failed (non-fatal): {e}")
 
         # ── .env file (secrets) — only write if api_key is set ──
         env_path = openclaw_dir / ".env"

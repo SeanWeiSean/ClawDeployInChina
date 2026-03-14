@@ -27,6 +27,8 @@ interface SkillEntry {
   name: string;
   description: string;
   source: 'builtin' | 'custom';
+  certified: boolean;
+  enabled: boolean;
 }
 
 interface OpenClawAPI {
@@ -52,6 +54,7 @@ interface OpenClawAPI {
   };
   skills: {
     list(): Promise<{ builtin: SkillEntry[]; custom: SkillEntry[] }>;
+    updateAllowlist(allowBundled: string[]): Promise<void>;
   };
   chat: {
     isConnected(): Promise<boolean>;
