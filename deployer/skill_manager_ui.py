@@ -1,0 +1,184 @@
+"""Skill Manager popup — lets the user modify the bundled skill allowlist.
+
+Opens as a modal Toplevel dialog from the main installer window.
+Returns a list of selected skill names, or None if the user cancelled.
+"""
+
+from __future__ import annotations
+import tkinter as tk
+from tkinter import ttk
+from typing import Optional
+
+from deployer.skill_catalog import SKILL_CATALOG, get_certified_skills
+
+
+# ── Colours (match deploy.py palette) ──
+BG       = "#ffffff"
+BG_CARD  = "#f7f8fa"
+FG       = "#222222"
+FG_DIM   = "#999999"
+ACCENT   = "#4a90d9"
+TAG_CERT = "#34c759"
+TAG_WARN = "#ff9500"
+
+
+class SkillManagerDialog(tk.Toplevel):
+    """Modal dialog for selecting which bundled skills to allow.
+
+    Usage::
+
+        dialog = SkillManagerDialog(parent, preselected=["tmux", "canvas"])
+        parent.wait_window(dialog)
+        selected = dialog.result  # list[str] or None
+    """
+
+    result: Optional[list[str]] = None
+
+    def __init__(self, parent: tk.Tk, preselected: list[str] | None = None):
+        super().__init__(parent)
+        self.title("技能管理器 — 选择允许的内置技能")
+        self.configure(bg=BG)
+        self.geometry("560x520")
+        self.resizable(False, True)
+        self.transient(parent)
+        self.grab_set()
+
+        # If no preselection given, default to certified skills
+        if preselected is None:
+            preselected = get_certified_skills()
+
+        self._vars: dict[str, tk.BooleanVar] = {}
+        self._build_ui(preselected)
+
+        # Centre on parent
+        self.update_idletasks()
+        px = parent.winfo_x() + (parent.winfo_width() - self.winfo_width()) // 2
+        py = parent.winfo_y() + (parent.winfo_height() - self.winfo_height()) // 2
+        self.geometry(f"+{max(px, 0)}+{max(py, 0)}")
+
+    # ── UI ──
+
+    def _build_ui(self, preselected: list[str]):
+        # Title
+        tk.Label(self, text="选择允许安装的内置技能", font=("Segoe UI", 14, "bold"),
+                 bg=BG, fg=FG).pack(pady=(12, 4))
+        tk.Label(self, text="未勾选的技能将在运行时被禁用",
+                 font=("Segoe UI", 9), bg=BG, fg=FG_DIM).pack(pady=(0, 8))
+
+        # Toolbar
+        toolbar = tk.Frame(self, bg=BG)
+        toolbar.pack(fill="x", padx=16, pady=(0, 8))
+
+        for text, cmd in [
+            ("仅认证",  self._select_certified),
+            ("全选",    self._select_all),
+            ("全不选",  self._select_none),
+        ]:
+            tk.Button(toolbar, text=text, command=cmd,
+                      font=("Segoe UI", 9), bg=BG_CARD, fg=FG,
+                      bd=1, relief="solid", padx=10, pady=2,
+                      cursor="hand2").pack(side="left", padx=(0, 6))
+
+        # Selection count label
+        self._count_label = tk.Label(toolbar, text="", font=("Segoe UI", 9),
+                                     bg=BG, fg=FG_DIM)
+        self._count_label.pack(side="right")
+
+        # Scrollable checklist
+        list_frame = tk.Frame(self, bg=BG)
+        list_frame.pack(fill="both", expand=True, padx=16, pady=(0, 8))
+
+        canvas = tk.Canvas(list_frame, bg=BG, highlightthickness=0)
+        scrollbar = ttk.Scrollbar(list_frame, orient="vertical", command=canvas.yview)
+        inner = tk.Frame(canvas, bg=BG)
+
+        inner.bind("<Configure>", lambda e: canvas.configure(scrollregion=canvas.bbox("all")))
+        canvas.create_window((0, 0), window=inner, anchor="nw")
+        canvas.configure(yscrollcommand=scrollbar.set)
+
+        canvas.pack(side="left", fill="both", expand=True)
+        scrollbar.pack(side="right", fill="y")
+
+        # Mouse wheel scrolling
+        def _on_mousewheel(event):
+            canvas.yview_scroll(int(-1 * (event.delta / 120)), "units")
+        canvas.bind_all("<MouseWheel>", _on_mousewheel)
+
+        # Populate skills — certified first, then uncertified
+        pre_set = set(preselected)
+        certified = sorted(k for k, v in SKILL_CATALOG.items() if v["certified"])
+        uncertified = sorted(k for k, v in SKILL_CATALOG.items() if not v["certified"])
+
+        self._add_section(inner, "✓ 已认证技能", TAG_CERT, certified, pre_set)
+        self._add_section(inner, "⚠ 未认证技能（需要外部 API 密钥或第三方服务）", TAG_WARN, uncertified, pre_set)
+
+        self._update_count()
+
+        # Bottom buttons
+        btn_frame = tk.Frame(self, bg=BG)
+        btn_frame.pack(fill="x", padx=16, pady=(0, 12))
+
+        tk.Button(btn_frame, text="确认", command=self._on_ok,
+                  bg=ACCENT, fg="#ffffff", font=("Segoe UI", 11, "bold"),
+                  bd=0, padx=24, pady=6, cursor="hand2",
+                  relief="flat").pack(side="right", padx=(6, 0))
+
+        tk.Button(btn_frame, text="取消", command=self._on_cancel,
+                  bg=BG_CARD, fg=FG, font=("Segoe UI", 11),
+                  bd=1, relief="solid", padx=24, pady=6,
+                  cursor="hand2").pack(side="right")
+
+    def _add_section(self, parent: tk.Frame, title: str, color: str,
+                     skills: list[str], preselected: set[str]):
+        tk.Label(parent, text=title, font=("Segoe UI", 10, "bold"),
+                 bg=BG, fg=color, anchor="w").pack(fill="x", pady=(8, 4))
+
+        for name in skills:
+            info = SKILL_CATALOG[name]
+            var = tk.BooleanVar(value=name in preselected)
+            var.trace_add("write", lambda *_: self._update_count())
+            self._vars[name] = var
+
+            row = tk.Frame(parent, bg=BG)
+            row.pack(fill="x", pady=1)
+
+            cb = tk.Checkbutton(row, variable=var, bg=BG, activebackground=BG,
+                                highlightthickness=0, bd=0)
+            cb.pack(side="left")
+
+            tk.Label(row, text=name, font=("Consolas", 10), bg=BG, fg=FG,
+                     width=22, anchor="w").pack(side="left")
+
+            tk.Label(row, text=info["description"], font=("Segoe UI", 9),
+                     bg=BG, fg=FG_DIM, anchor="w").pack(side="left", fill="x")
+
+    # ── Toolbar actions ──
+
+    def _select_certified(self):
+        certified = get_certified_skills()
+        for name, var in self._vars.items():
+            var.set(name in certified)
+
+    def _select_all(self):
+        for var in self._vars.values():
+            var.set(True)
+
+    def _select_none(self):
+        for var in self._vars.values():
+            var.set(False)
+
+    def _update_count(self):
+        n = sum(1 for v in self._vars.values() if v.get())
+        self._count_label.config(text=f"已选 {n}/{len(self._vars)} 个技能")
+
+    # ── Dialog result ──
+
+    def _on_ok(self):
+        self.result = sorted(name for name, var in self._vars.items() if var.get())
+        self.grab_release()
+        self.destroy()
+
+    def _on_cancel(self):
+        self.result = None
+        self.grab_release()
+        self.destroy()

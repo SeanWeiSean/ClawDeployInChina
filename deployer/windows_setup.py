@@ -814,6 +814,45 @@ class WindowsSetup:
             if invalid and not providers:
                 existing.pop("models", None)
 
+        # ── Skill whitelist ──
+        # Only applied when skills.enable is true in deployer config.
+        if self.cfg.get("skills.enable", False):
+            allow_bundled = self.cfg.get("skills.allowBundled", [])
+            allow_managed = self.cfg.get("skills.allowManaged", [])
+
+            skills_cfg = existing.get("skills", {})
+
+            # Bundled skill restriction: allowBundled=[...] limits which built-in skills load.
+            if allow_bundled:
+                skills_cfg["allowBundled"] = allow_bundled
+            else:
+                self.log.warn("  Skill whitelist: allowBundled is empty — all bundled skills will load")
+
+            # Managed/workspace skill restriction: OpenClaw has no native allowlist for these,
+            # so we enumerate any currently known managed skills and disable the ones not
+            # on the whitelist via entries.<name>.enabled=false in openclaw.json.
+            # An empty allowManaged list with enable=true disables ALL managed/workspace skills.
+            if allow_managed is not None:
+                entries = skills_cfg.get("entries", {})
+                # Skills in the whitelist: ensure enabled=true.
+                for name in allow_managed:
+                    entry = entries.get(name, {})
+                    entry["enabled"] = True
+                    entries[name] = entry
+                # Skills already tracked in entries that are NOT in the whitelist: disable.
+                for name in list(entries.keys()):
+                    if name not in allow_managed:
+                        entries[name]["enabled"] = False
+                skills_cfg["entries"] = entries
+
+            existing["skills"] = skills_cfg
+            self.log.info(
+                f"  Skill whitelist: bundled={allow_bundled or 'all'}, "
+                f"managed={allow_managed if allow_managed else 'none allowed'}"
+            )
+        else:
+            self.log.info("  Skill whitelist: disabled (skills.enable=false in deployer config)")
+
         try:
             config_path.write_text(json.dumps(existing, indent=2), encoding="utf-8")
             self.log.success(f"Config written to {config_path}")
