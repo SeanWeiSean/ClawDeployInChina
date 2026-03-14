@@ -7,7 +7,7 @@ export function createTray(callbacks: {
   onShowWindow: () => void;
   onRestartGateway: () => void;
 }): void {
-  const iconPath = path.join(__dirname, "../assets/image.png");
+  const iconPath = path.join(__dirname, "../assets/microclaw.png");
   const icon = nativeImage.createFromPath(iconPath);
 
   tray = new Tray(icon.isEmpty() ? nativeImage.createEmpty() : icon);

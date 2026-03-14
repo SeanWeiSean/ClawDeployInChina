@@ -7,7 +7,7 @@ directories:
 
 win:
   target: nsis
-  icon: assets/icon.ico
+  icon: assets/microclaw.ico
   signDlls: false
   sign: null
 

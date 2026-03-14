@@ -4,6 +4,13 @@ $ErrorActionPreference = "Stop"
 
 $root = Split-Path -Parent $MyInvocation.MyCommand.Path
 
+# Use the bundled Node (v22) instead of the outdated system Node
+$microclawNode = "$env:USERPROFILE\.microclaw-node"
+if (Test-Path $microclawNode) {
+    $env:PATH = "$microclawNode;$env:PATH"
+    Write-Host "  Using Node: $microclawNode ($(& node --version))"
+}
+
 # Step 1: Build & pack Electron app
 Write-Host "`n=== Step 1/3: Build & pack desktop ===" -ForegroundColor Cyan
 Push-Location "$root\desktop"
@@ -24,5 +31,5 @@ pyinstaller OpenClawDeployer.spec --noconfirm
 Pop-Location
 
 Write-Host "`n=== Done ===" -ForegroundColor Green
-Write-Host "  Installer: $root\dist\MicroClawDeployer.exe"
+Write-Host "  Installer: $root\dist\MicroClawInstaller.exe"
 Write-Host "  Portable:  $zipPath"

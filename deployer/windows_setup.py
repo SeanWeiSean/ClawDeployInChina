@@ -1386,13 +1386,14 @@ class WindowsSetup:
             except Exception:
                 pass
 
-        # 3. Kill desktop client
+        # 3. Kill desktop clients (both MicroClaw and official OpenClaw)
         self.log.step("关闭桌面客户端…")
-        try:
-            self._run(["taskkill", "/F", "/IM", "MicroClawDesktop.exe"],
-                      capture_output=True, timeout=10)
-        except Exception:
-            pass
+        for exe in ("MicroClawDesktop.exe", "OpenClaw.exe"):
+            try:
+                self._run(["taskkill", "/F", "/IM", exe],
+                          capture_output=True, timeout=10)
+            except Exception:
+                pass
         time.sleep(1)
 
         # 4. openclaw uninstall --all --yes --non-interactive
@@ -1426,14 +1427,67 @@ class WindowsSetup:
                 except Exception as e:
                     self.log.warn(f"npx 卸载失败: {e}")
 
-        # 6. Remove desktop client
+        # 6. npm uninstall -g openclaw
+        self.log.step("卸载 openclaw 命令…")
+        npm = self._get_npm_path()
+        if npm:
+            try:
+                self._run(
+                    [npm, "uninstall", "-g", "openclaw"],
+                    capture_output=True, text=True, encoding="utf-8",
+                    errors="replace", timeout=120, env=env,
+                )
+                self.log.success("npm uninstall -g openclaw 完成")
+            except Exception as e:
+                self.log.warn(f"npm uninstall openclaw 失败: {e}")
+
+        # 7. Remove .openclaw-node and clean PATH
+        self.log.step("清理 Node 环境…")
+        node_dir = self.node_dir
+        if node_dir.exists():
+            self._remove_from_system_path(str(node_dir))
+            shutil.rmtree(node_dir, ignore_errors=True)
+            self.log.info(f"  已删除 {node_dir}")
+
+        # 8. Remove official OpenClaw desktop app if present
+        official_dir = Path.home() / "AppData" / "Local" / "Programs" / "OpenClaw"
+        if official_dir.exists():
+            self.log.step("清理官方 OpenClaw 客户端…")
+            # Run its uninstaller silently if available
+            uninstaller = official_dir / "Uninstall OpenClaw.exe"
+            if uninstaller.exists():
+                try:
+                    self._run(
+                        [str(uninstaller), "/S"],
+                        capture_output=True, timeout=60,
+                    )
+                    self.log.success("官方 OpenClaw 卸载程序已执行")
+                    time.sleep(2)
+                except Exception as e:
+                    self.log.warn(f"官方卸载程序执行失败: {e}")
+            # Clean up remnants
+            runtime_bin = official_dir / "resources" / "runtime" / "bin"
+            if runtime_bin.exists():
+                self._remove_from_system_path(str(runtime_bin))
+            if official_dir.exists():
+                shutil.rmtree(official_dir, ignore_errors=True)
+                self.log.info(f"  已删除 {official_dir}")
+
+        # 10. Remove desktop client
         self.log.step("删除桌面客户端…")
         install_dir = DEFAULT_DESKTOP_DIR
         if install_dir.exists():
             shutil.rmtree(install_dir, ignore_errors=True)
             self.log.info(f"  已删除 {install_dir}")
 
-        # 7. Remove desktop shortcuts
+        # 11. Remove ~/.openclaw config directory
+        self.log.step("清理配置目录…")
+        openclaw_config = Path.home() / ".openclaw"
+        if openclaw_config.exists():
+            shutil.rmtree(openclaw_config, ignore_errors=True)
+            self.log.info(f"  已删除 {openclaw_config}")
+
+        # 12. Remove desktop shortcuts
         self.log.step("删除快捷方式…")
         desktop = self._get_desktop_path()
         for name in ("MicroClawDesktop.lnk", "MicroClawDesktop.url",

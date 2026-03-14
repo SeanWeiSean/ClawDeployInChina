@@ -306,6 +306,28 @@
           </div>
         </div>
 
+        <!-- Web Search (Brave) -->
+        <div class="sub-label" style="margin-top: 40px">Web Search</div>
+        <div class="card-group">
+          <div class="card-row no-border port-row">
+            <div class="port-info">
+              <div class="port-title">Brave Search API Key</div>
+              <div class="port-desc">用于 OpenClaw 的联网搜索能力。前往 <a href="#" @click.prevent="openExternal('https://brave.com/search/api/')" style="color:var(--accent)">brave.com/search/api</a> 获取 API Key。保存后网关将自动重启生效。</div>
+            </div>
+            <div style="display:flex;gap:8px;align-items:center;flex-shrink:0">
+              <el-input
+                v-model="braveApiKey"
+                type="password"
+                show-password
+                size="small"
+                placeholder="BSA..."
+                style="width: 240px"
+              />
+              <el-button size="small" type="primary" @click="saveBraveApiKey" :loading="braveApiKeySaving">保存</el-button>
+            </div>
+          </div>
+        </div>
+
         <!-- Gateway Logs -->
         <div class="sub-label-row" style="margin-top: 24px">
           <span class="sub-label" style="margin-bottom:0">网关日志</span>
@@ -398,7 +420,7 @@
       <div v-if="activeSection === 'about'" class="section">
         <div class="section-label">关于</div>
         <div class="about-card">
-          <div class="about-icon">🦞</div>
+          <img class="about-icon" :src="microclawLogo" alt="MicroClaw" />
           <div class="about-name">MicroClawDesktop</div>
           <div class="about-version">版本 1.0.0</div>
         </div>
@@ -419,6 +441,7 @@ import { useRouter } from "vue-router";
 import { useGatewayStore } from "@/stores/gateway";
 import { useChatStore } from "@/stores/chat";
 import { ElMessage, ElMessageBox } from "element-plus";
+import microclawLogo from "../../../assets/microclaw.png";
 
 const router = useRouter();
 const gateway = useGatewayStore();
@@ -473,6 +496,10 @@ const editTestResult = ref<{ ok: boolean; message: string } | null>(null);
 
 const builtinSkills = ref<{ id: string; name: string; description: string }[]>([]);
 const customSkills = ref<{ id: string; name: string; description: string }[]>([]);
+
+// --- Brave Search API ---
+const braveApiKey = ref("");
+const braveApiKeySaving = ref(false);
 
 // --- Usage state ---
 interface UsageStats {
@@ -636,6 +663,11 @@ onMounted(async () => {
       }
     }
     customModels.value = loaded;
+  }
+
+  // Load Brave Search API key from config
+  if (config?.tools?.web?.search?.apiKey) {
+    braveApiKey.value = config.tools.web.search.apiKey;
   }
 
   // Load skills from disk
@@ -807,6 +839,36 @@ async function testCustomModel() {
   } finally {
     testLoading.value = false;
   }
+}
+
+async function saveBraveApiKey() {
+  const key = braveApiKey.value.trim();
+  braveApiKeySaving.value = true;
+  try {
+    const config = (await window.openclaw.config.read()) || {};
+    config.tools = config.tools || {};
+    config.tools.web = config.tools.web || {};
+    if (key) {
+      config.tools.web.search = {
+        ...config.tools.web.search,
+        provider: "brave",
+        apiKey: key,
+      };
+    } else {
+      delete config.tools.web.search;
+    }
+    await window.openclaw.config.write(config);
+    await window.openclaw.gateway.restart();
+    ElMessage.success(key ? "Brave API Key 已保存，网关正在重启…" : "Brave API Key 已清除");
+  } catch (err: any) {
+    ElMessage.error("保存失败: " + (err.message || err));
+  } finally {
+    braveApiKeySaving.value = false;
+  }
+}
+
+function openExternal(url: string) {
+  window.open(url, "_blank");
 }
 
 async function reconnectGateway() {
@@ -1049,8 +1111,9 @@ async function clearChatHistory() {
 }
 
 .about-icon {
-  font-size: 52px;
-  line-height: 1;
+  width: 52px;
+  height: 52px;
+  object-fit: contain;
   margin-bottom: 4px;
 }
 
