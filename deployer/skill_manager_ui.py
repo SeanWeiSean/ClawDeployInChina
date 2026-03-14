@@ -9,7 +9,10 @@ import tkinter as tk
 from tkinter import ttk
 from typing import Optional
 
-from deployer.skill_catalog import SKILL_CATALOG, get_certified_skills
+from deployer.skill_catalog import (
+    SKILL_CATALOG, get_certified_skills,
+    MANAGED_SKILL_CATALOG, get_certified_managed_skills,
+)
 
 
 # ── Colours (match deploy.py palette) ──
@@ -33,12 +36,15 @@ class SkillManagerDialog(tk.Toplevel):
     """
 
     result: Optional[list[str]] = None
+    managed_result: Optional[list[str]] = None
 
-    def __init__(self, parent: tk.Tk, preselected: list[str] | None = None):
+    def __init__(self, parent: tk.Tk,
+                 preselected: list[str] | None = None,
+                 preselected_managed: list[str] | None = None):
         super().__init__(parent)
-        self.title("技能管理器 — 选择允许的内置技能")
+        self.title("技能管理器 — 选择允许的技能")
         self.configure(bg=BG)
-        self.geometry("560x520")
+        self.geometry("560x620")
         self.resizable(False, True)
         self.transient(parent)
         self.grab_set()
@@ -46,9 +52,12 @@ class SkillManagerDialog(tk.Toplevel):
         # If no preselection given, default to certified skills
         if preselected is None:
             preselected = get_certified_skills()
+        if preselected_managed is None:
+            preselected_managed = get_certified_managed_skills()
 
         self._vars: dict[str, tk.BooleanVar] = {}
-        self._build_ui(preselected)
+        self._managed_vars: dict[str, tk.BooleanVar] = {}
+        self._build_ui(preselected, preselected_managed)
 
         # Centre on parent
         self.update_idletasks()
@@ -58,9 +67,9 @@ class SkillManagerDialog(tk.Toplevel):
 
     # ── UI ──
 
-    def _build_ui(self, preselected: list[str]):
+    def _build_ui(self, preselected: list[str], preselected_managed: list[str]):
         # Title
-        tk.Label(self, text="选择允许安装的内置技能", font=("Segoe UI", 14, "bold"),
+        tk.Label(self, text="选择允许安装的技能", font=("Segoe UI", 14, "bold"),
                  bg=BG, fg=FG).pack(pady=(12, 4))
         tk.Label(self, text="未勾选的技能将在运行时被禁用",
                  font=("Segoe UI", 9), bg=BG, fg=FG_DIM).pack(pady=(0, 8))
@@ -104,13 +113,33 @@ class SkillManagerDialog(tk.Toplevel):
             canvas.yview_scroll(int(-1 * (event.delta / 120)), "units")
         canvas.bind_all("<MouseWheel>", _on_mousewheel)
 
-        # Populate skills — certified first, then uncertified
+        # Populate skills — bundled first, then managed
         pre_set = set(preselected)
+        pre_managed_set = set(preselected_managed)
+
+        # ═══ Bundled skills section ═══
+        tk.Label(inner, text="═══ 内置技能 ═══", font=("Segoe UI", 11, "bold"),
+                 bg=BG, fg=FG, anchor="center").pack(fill="x", pady=(8, 2))
+
         certified = sorted(k for k, v in SKILL_CATALOG.items() if v["certified"])
         uncertified = sorted(k for k, v in SKILL_CATALOG.items() if not v["certified"])
 
-        self._add_section(inner, "✓ 已认证技能", TAG_CERT, certified, pre_set)
-        self._add_section(inner, "⚠ 未认证技能（需要外部 API 密钥或第三方服务）", TAG_WARN, uncertified, pre_set)
+        self._add_section(inner, "✓ 已认证技能", TAG_CERT, certified, pre_set,
+                          SKILL_CATALOG, self._vars)
+        self._add_section(inner, "⚠ 未认证技能（需要外部 API 密钥或第三方服务）", TAG_WARN, uncertified, pre_set,
+                          SKILL_CATALOG, self._vars)
+
+        # ═══ Managed skills section ═══
+        tk.Label(inner, text="═══ 托管技能 ═══", font=("Segoe UI", 11, "bold"),
+                 bg=BG, fg=FG, anchor="center").pack(fill="x", pady=(16, 2))
+
+        certified_managed = sorted(k for k, v in MANAGED_SKILL_CATALOG.items() if v["certified"])
+        uncertified_managed = sorted(k for k, v in MANAGED_SKILL_CATALOG.items() if not v["certified"])
+
+        self._add_section(inner, "✓ 已认证技能", TAG_CERT, certified_managed, pre_managed_set,
+                          MANAGED_SKILL_CATALOG, self._managed_vars)
+        self._add_section(inner, "⚠ 未认证技能", TAG_WARN, uncertified_managed, pre_managed_set,
+                          MANAGED_SKILL_CATALOG, self._managed_vars)
 
         self._update_count()
 
@@ -129,15 +158,16 @@ class SkillManagerDialog(tk.Toplevel):
                   cursor="hand2").pack(side="right")
 
     def _add_section(self, parent: tk.Frame, title: str, color: str,
-                     skills: list[str], preselected: set[str]):
+                     skills: list[str], preselected: set[str],
+                     catalog: dict, vars_dict: dict[str, tk.BooleanVar]):
         tk.Label(parent, text=title, font=("Segoe UI", 10, "bold"),
                  bg=BG, fg=color, anchor="w").pack(fill="x", pady=(8, 4))
 
         for name in skills:
-            info = SKILL_CATALOG[name]
+            info = catalog[name]
             var = tk.BooleanVar(value=name in preselected)
             var.trace_add("write", lambda *_: self._update_count())
-            self._vars[name] = var
+            vars_dict[name] = var
 
             row = tk.Frame(parent, bg=BG)
             row.pack(fill="x", pady=1)
@@ -158,27 +188,38 @@ class SkillManagerDialog(tk.Toplevel):
         certified = get_certified_skills()
         for name, var in self._vars.items():
             var.set(name in certified)
+        certified_managed = get_certified_managed_skills()
+        for name, var in self._managed_vars.items():
+            var.set(name in certified_managed)
 
     def _select_all(self):
         for var in self._vars.values():
+            var.set(True)
+        for var in self._managed_vars.values():
             var.set(True)
 
     def _select_none(self):
         for var in self._vars.values():
             var.set(False)
+        for var in self._managed_vars.values():
+            var.set(False)
 
     def _update_count(self):
-        n = sum(1 for v in self._vars.values() if v.get())
-        self._count_label.config(text=f"已选 {n}/{len(self._vars)} 个技能")
+        nb = sum(1 for v in self._vars.values() if v.get())
+        nm = sum(1 for v in self._managed_vars.values() if v.get())
+        total = len(self._vars) + len(self._managed_vars)
+        self._count_label.config(text=f"已选 {nb + nm}/{total} 个技能")
 
     # ── Dialog result ──
 
     def _on_ok(self):
         self.result = sorted(name for name, var in self._vars.items() if var.get())
+        self.managed_result = sorted(name for name, var in self._managed_vars.items() if var.get())
         self.grab_release()
         self.destroy()
 
     def _on_cancel(self):
         self.result = None
+        self.managed_result = None
         self.grab_release()
         self.destroy()

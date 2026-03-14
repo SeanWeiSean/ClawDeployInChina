@@ -345,21 +345,17 @@
       <div v-if="activeSection === 'skills'" class="section">
         <div class="section-label">技能管理</div>
 
-        <!-- Built-in Skills header -->
+        <!-- ══ Built-in Skills ══ -->
         <div style="display:flex; align-items:center; justify-content:space-between; margin-bottom:8px">
-          <span class="sub-label" style="margin:0">Built-in Skills ({{ builtinSkills.length }})</span>
+          <span class="sub-label" style="margin:0">内置技能 ({{ builtinSkills.length }})</span>
           <span class="skill-count-label">{{ enabledCount }}/{{ builtinSkills.length }} 已启用</span>
         </div>
 
-        <!-- Certified Skills -->
+        <!-- Certified Built-in -->
         <div v-if="certifiedSkills.length" class="sub-label" style="font-size:12px; margin-top:4px">已认证 ({{ certifiedSkills.length }})</div>
         <div v-if="certifiedSkills.length" class="card-group">
-          <div
-            v-for="(skill, idx) in certifiedSkills"
-            :key="skill.id"
-            class="card-row"
-            :class="{ 'no-border': idx === certifiedSkills.length - 1 }"
-          >
+          <div v-for="(skill, idx) in certifiedSkills" :key="skill.id" class="card-row"
+               :class="{ 'no-border': idx === certifiedSkills.length - 1 }">
             <div class="skill-info">
               <div style="display:flex; align-items:center; gap:8px">
                 <span class="row-label">{{ skill.name }}</span>
@@ -367,22 +363,15 @@
               </div>
               <span class="skill-desc">{{ skill.description }}</span>
             </div>
-            <el-switch
-              :model-value="skill.enabled"
-              @change="(val: boolean) => toggleSkill(skill.id, val)"
-            />
+            <el-switch :model-value="skill.enabled" @change="(val: boolean) => toggleSkill(skill.id, val)" />
           </div>
         </div>
 
-        <!-- Uncertified Skills -->
+        <!-- Uncertified Built-in -->
         <div v-if="uncertifiedSkills.length" class="sub-label" style="font-size:12px">未认证 ({{ uncertifiedSkills.length }})</div>
         <div v-if="uncertifiedSkills.length" class="card-group">
-          <div
-            v-for="(skill, idx) in uncertifiedSkills"
-            :key="skill.id"
-            class="card-row"
-            :class="{ 'no-border': idx === uncertifiedSkills.length - 1 }"
-          >
+          <div v-for="(skill, idx) in uncertifiedSkills" :key="skill.id" class="card-row"
+               :class="{ 'no-border': idx === uncertifiedSkills.length - 1 }">
             <div class="skill-info">
               <div style="display:flex; align-items:center; gap:8px">
                 <span class="row-label">{{ skill.name }}</span>
@@ -390,10 +379,7 @@
               </div>
               <span class="skill-desc">{{ skill.description }}</span>
             </div>
-            <el-switch
-              :model-value="skill.enabled"
-              @change="(val: boolean) => toggleSkill(skill.id, val)"
-            />
+            <el-switch :model-value="skill.enabled" @change="(val: boolean) => toggleSkill(skill.id, val)" />
           </div>
         </div>
 
@@ -403,16 +389,58 @@
           </div>
         </div>
 
-        <!-- Custom Skills -->
+        <!-- ══ Managed / Workspace Skills ══ -->
+        <div style="display:flex; align-items:center; justify-content:space-between; margin-top:20px; margin-bottom:8px">
+          <span class="sub-label" style="margin:0">托管技能 ({{ managedSkills.length }})</span>
+          <span class="skill-count-label">{{ managedEnabledCount }}/{{ managedSkills.length }} 已启用</span>
+        </div>
+
+        <!-- Certified Managed -->
+        <div v-if="certifiedManagedSkills.length" class="sub-label" style="font-size:12px; margin-top:4px">已认证 ({{ certifiedManagedSkills.length }})</div>
+        <div v-if="certifiedManagedSkills.length" class="card-group">
+          <div v-for="(skill, idx) in certifiedManagedSkills" :key="skill.id" class="card-row"
+               :class="{ 'no-border': idx === certifiedManagedSkills.length - 1 }">
+            <div class="skill-info">
+              <div style="display:flex; align-items:center; gap:8px">
+                <span class="row-label">{{ skill.name }}</span>
+                <span class="badge badge-green">已认证</span>
+                <span v-if="!skill.installed" class="badge badge-gray">未安装</span>
+              </div>
+              <span class="skill-desc">{{ skill.description }}</span>
+            </div>
+            <el-switch :model-value="skill.enabled" :disabled="!skill.installed" @change="(val: boolean) => toggleManagedSkill(skill.id, val)" />
+          </div>
+        </div>
+
+        <!-- Uncertified / Unknown Managed -->
+        <div v-if="uncertifiedManagedSkills.length" class="sub-label" style="font-size:12px">未认证 ({{ uncertifiedManagedSkills.length }})</div>
+        <div v-if="uncertifiedManagedSkills.length" class="card-group">
+          <div v-for="(skill, idx) in uncertifiedManagedSkills" :key="skill.id" class="card-row"
+               :class="{ 'no-border': idx === uncertifiedManagedSkills.length - 1 }">
+            <div class="skill-info">
+              <div style="display:flex; align-items:center; gap:8px">
+                <span class="row-label">{{ skill.name }}</span>
+                <span class="badge badge-orange">未认证</span>
+                <span v-if="!skill.installed" class="badge badge-gray">未安装</span>
+              </div>
+              <span class="skill-desc">{{ skill.description }}</span>
+            </div>
+            <el-switch :model-value="skill.enabled" :disabled="!skill.installed" @change="(val: boolean) => toggleManagedSkill(skill.id, val)" />
+          </div>
+        </div>
+
+        <div v-if="!managedSkills.length" class="card-group">
+          <div class="card-row no-border placeholder-row">
+            <span class="placeholder-text">暂无托管技能</span>
+          </div>
+        </div>
+
+        <!-- ══ Custom Skills (unchanged) ══ -->
         <div class="sub-label">Custom Skills ({{ customSkills.length }})</div>
         <div class="card-group">
           <template v-if="customSkills.length">
-            <div
-              v-for="(skill, idx) in customSkills"
-              :key="skill.id"
-              class="card-row"
-              :class="{ 'no-border': idx === customSkills.length - 1 }"
-            >
+            <div v-for="(skill, idx) in customSkills" :key="skill.id" class="card-row"
+                 :class="{ 'no-border': idx === customSkills.length - 1 }">
               <div class="skill-info">
                 <span class="row-label">{{ skill.name }}</span>
                 <span class="skill-desc">{{ skill.description }}</span>
@@ -532,6 +560,7 @@ const editTestResult = ref<{ ok: boolean; message: string } | null>(null);
 
 const builtinSkills = ref<SkillEntry[]>([]);
 const customSkills = ref<SkillEntry[]>([]);
+const managedSkills = ref<SkillEntry[]>([]);
 
 const certifiedSkills = computed(() =>
   builtinSkills.value.filter(s => s.certified).sort((a, b) => a.name.localeCompare(b.name))
@@ -541,6 +570,16 @@ const uncertifiedSkills = computed(() =>
 );
 const enabledCount = computed(() =>
   builtinSkills.value.filter(s => s.enabled).length
+);
+
+const certifiedManagedSkills = computed(() =>
+  managedSkills.value.filter(s => s.certified).sort((a, b) => a.name.localeCompare(b.name))
+);
+const uncertifiedManagedSkills = computed(() =>
+  managedSkills.value.filter(s => !s.certified).sort((a, b) => a.name.localeCompare(b.name))
+);
+const managedEnabledCount = computed(() =>
+  managedSkills.value.filter(s => s.enabled).length
 );
 
 async function toggleSkill(skillId: string, enabled: boolean) {
@@ -558,6 +597,20 @@ async function toggleSkill(skillId: string, enabled: boolean) {
   } catch (err: any) {
     if (skill) skill.enabled = !enabled;
     ElMessage.error("技能配置更新失败: " + (err.message || err));
+  }
+}
+
+async function toggleManagedSkill(skillId: string, enabled: boolean) {
+  const skill = managedSkills.value.find(s => s.id === skillId);
+  if (skill) skill.enabled = enabled;
+
+  try {
+    await window.openclaw.skills.updateManagedEntries({ [skillId]: { enabled } });
+    await window.openclaw.gateway.restart();
+    ElMessage.success("托管技能配置已更新，网关正在重启…");
+  } catch (err: any) {
+    if (skill) skill.enabled = !enabled;
+    ElMessage.error("托管技能配置更新失败: " + (err.message || err));
   }
 }
 
@@ -739,6 +792,7 @@ onMounted(async () => {
     const skills = await window.openclaw.skills.list();
     builtinSkills.value = skills.builtin;
     customSkills.value = skills.custom;
+    managedSkills.value = skills.managed ?? [];
   } catch {
     // Skills listing not available
   }
@@ -1396,6 +1450,12 @@ async function clearChatHistory() {
   background: rgba(255, 149, 0, 0.12);
   color: #ff9500;
   border: 1px solid rgba(255, 149, 0, 0.25);
+}
+
+.badge-gray {
+  background: rgba(142, 142, 147, 0.12);
+  color: #8e8e93;
+  border: 1px solid rgba(142, 142, 147, 0.25);
 }
 
 .skill-count-label {

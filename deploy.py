@@ -17,7 +17,7 @@ from pathlib import Path
 
 from deployer.config import DeployerConfig
 from deployer.logger import DeployerLogger
-from deployer.skill_catalog import get_certified_skills
+from deployer.skill_catalog import get_certified_skills, get_certified_managed_skills
 from deployer.skill_manager_ui import SkillManagerDialog
 from deployer.windows_setup import WindowsSetup, DEFAULT_NODE_DIR
 
@@ -73,6 +73,7 @@ class DeployerApp(tk.Tk):
         self._running = False
         self._failed = False
         self._selected_skills: list[str] | None = None  # None = use certified default
+        self._selected_managed_skills: list[str] | None = None
 
         self._build_ui()
 
@@ -212,12 +213,15 @@ class DeployerApp(tk.Tk):
 
     def _on_skill_manager(self):
         preselected = self._selected_skills if self._selected_skills is not None else get_certified_skills()
-        dialog = SkillManagerDialog(self, preselected=preselected)
+        preselected_managed = self._selected_managed_skills if self._selected_managed_skills is not None else get_certified_managed_skills()
+        dialog = SkillManagerDialog(self, preselected=preselected, preselected_managed=preselected_managed)
         self.wait_window(dialog)
         if dialog.result is not None:
             self._selected_skills = dialog.result
-            n = len(dialog.result)
-            self._skill_status.config(text=f"已选择 {n} 个技能")
+            self._selected_managed_skills = dialog.managed_result
+            nb = len(dialog.result)
+            nm = len(dialog.managed_result) if dialog.managed_result else 0
+            self._skill_status.config(text=f"已选择 {nb} 内置 + {nm} 托管技能")
 
     def _on_install(self):
         if self._running:
@@ -240,8 +244,10 @@ class DeployerApp(tk.Tk):
 
         # Apply skill selection
         skills = self._selected_skills if self._selected_skills is not None else get_certified_skills()
+        managed_skills = self._selected_managed_skills if self._selected_managed_skills is not None else get_certified_managed_skills()
         self.config.set("skills.enable", True)
         self.config.set("skills.allowBundled", skills)
+        self.config.set("skills.allowManaged", managed_skills)
 
         threading.Thread(target=self._install_thread, daemon=True).start()
 

@@ -19,7 +19,7 @@ from pathlib import Path
 from typing import Callable
 
 from deployer.logger import DeployerLogger
-from deployer.skill_catalog import export_catalog_json
+from deployer.skill_catalog import export_catalog_json, export_managed_catalog_json
 
 # ── Mirror URLs ──
 MIRRORS = {
@@ -877,6 +877,17 @@ class WindowsSetup:
             self.log.success(f"Skill catalog written to {catalog_path}")
         except Exception as e:
             self.log.warn(f"Skill catalog write failed (non-fatal): {e}")
+
+        # ── Managed skill catalog (certification metadata for managed/workspace skills) ──
+        managed_catalog_path = openclaw_dir / "managed_skill_catalog.json"
+        try:
+            managed_catalog_path.write_text(
+                json.dumps(export_managed_catalog_json(), indent=2, ensure_ascii=False),
+                encoding="utf-8",
+            )
+            self.log.success(f"Managed skill catalog written to {managed_catalog_path}")
+        except Exception as e:
+            self.log.warn(f"Managed skill catalog write failed (non-fatal): {e}")
 
         # ── .env file (secrets) — only write if api_key is set ──
         env_path = openclaw_dir / ".env"

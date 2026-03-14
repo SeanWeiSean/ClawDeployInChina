@@ -299,8 +299,9 @@ function registerIpcHandlers(): void {
     const homeDir = app.getPath("home");
     const builtinDir = path.join(homeDir, ".openclaw-node", "node_modules", "openclaw", "skills");
     const customDir = path.join(homeDir, ".agents", "skills");
+    const managedDir = path.join(homeDir, ".openclaw", "skills");
 
-    // Load certification catalog
+    // Load certification catalog (builtin)
     let catalog: Record<string, { description: string; certified: boolean }> = {};
     try {
       const catalogPath = path.join(getOpenClawStateDir(), "skill_catalog.json");
@@ -309,11 +310,21 @@ function registerIpcHandlers(): void {
       }
     } catch { /* catalog unavailable — all skills show as uncertified */ }
 
-    // Load allowBundled from config
+    // Load managed skill catalog
+    let managedCatalog: Record<string, { description: string; certified: boolean }> = {};
+    try {
+      const managedCatalogPath = path.join(getOpenClawStateDir(), "managed_skill_catalog.json");
+      if (fs.existsSync(managedCatalogPath)) {
+        managedCatalog = JSON.parse(fs.readFileSync(managedCatalogPath, "utf-8"));
+      }
+    } catch {}
+
+    // Load allowBundled and entries from config
     const config = readConfig();
     const allowBundled: string[] | undefined = config?.skills?.allowBundled;
+    const entries: Record<string, { enabled: boolean }> = config?.skills?.entries ?? {};
 
-    function scanSkills(dir: string, source: "builtin" | "custom"): any[] {
+    function scanSkills(dir: string, source: "builtin" | "custom" | "managed"): any[] {
       const results: any[] = [];
       if (!fs.existsSync(dir)) return results;
       for (const entry of fs.readdirSync(dir, { withFileTypes: true })) {
@@ -329,21 +340,45 @@ function registerIpcHandlers(): void {
           if (descMatch) description = descMatch[1].replace(/^["']|["']$/g, "").trim();
         }
 
-        const certified = catalog[entry.name]?.certified ?? false;
+        let certified = false;
         let enabled = true;
-        if (source === "builtin" && allowBundled && allowBundled.length > 0) {
-          enabled = allowBundled.includes(entry.name);
+
+        if (source === "managed") {
+          certified = managedCatalog[entry.name]?.certified ?? false;
+          enabled = entries[entry.name]?.enabled ?? certified;
+          if (!description && managedCatalog[entry.name]?.description) {
+            description = managedCatalog[entry.name].description;
+          }
+        } else {
+          certified = catalog[entry.name]?.certified ?? false;
+          if (source === "builtin" && allowBundled && allowBundled.length > 0) {
+            enabled = allowBundled.includes(entry.name);
+          }
         }
 
-        results.push({ id: entry.name, name, description, source, certified, enabled });
+        results.push({ id: entry.name, name, description, source, certified, enabled, installed: true });
       }
       return results;
     }
 
-    return {
-      builtin: scanSkills(builtinDir, "builtin"),
-      custom: scanSkills(customDir, "custom"),
-    };
+    const builtin = scanSkills(builtinDir, "builtin");
+    const custom = scanSkills(customDir, "custom");
+    const managedOnDisk = scanSkills(managedDir, "managed");
+
+    // Also list catalog-only managed skills (defined in catalog but not yet on disk)
+    const onDiskIds = new Set(managedOnDisk.map(s => s.id));
+    for (const [id, info] of Object.entries(managedCatalog)) {
+      if (!onDiskIds.has(id)) {
+        const enabled = entries[id]?.enabled ?? info.certified;
+        managedOnDisk.push({
+          id, name: id, description: info.description,
+          source: "managed" as const, certified: info.certified, enabled,
+          installed: false,
+        });
+      }
+    }
+
+    return { builtin, custom, managed: managedOnDisk };
   });
 
   ipcMain.handle("skills:update-allowlist", (_event, allowBundled: string[]) => {
@@ -354,6 +389,18 @@ function registerIpcHandlers(): void {
     fs.mkdirSync(stateDir, { recursive: true });
     fs.writeFileSync(getConfigPath(), JSON.stringify(config, null, 2), "utf-8");
   });
+
+  ipcMain.handle("skills:update-managed-entries",
+    (_event, updatedEntries: Record<string, { enabled: boolean }>) => {
+      const config = readConfig() || {};
+      if (!config.skills) config.skills = {};
+      if (!config.skills.entries) config.skills.entries = {};
+      Object.assign(config.skills.entries, updatedEntries);
+      const stateDir = getOpenClawStateDir();
+      fs.mkdirSync(stateDir, { recursive: true });
+      fs.writeFileSync(getConfigPath(), JSON.stringify(config, null, 2), "utf-8");
+    }
+  );
 
   // --- Chat (WebSocket gateway protocol) ---
   ipcMain.handle("chat:send-message", async (_event, params: { sessionKey: string; message: string }) => {

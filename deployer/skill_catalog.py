@@ -77,6 +77,14 @@ SKILL_CATALOG: dict[str, SkillInfo] = {
     "xurl":               {"description": "X (Twitter) API 客户端（需 API 密钥）","certified": False},
 }
 
+# Catalog of known managed/workspace skills.
+# Skills installed to ~/.agents/skills/ that appear here get certification metadata.
+# Skills NOT in this catalog are treated as uncertified and disabled by default.
+MANAGED_SKILL_CATALOG: dict[str, SkillInfo] = {
+    "microsoft-speedbird": {"description": "Microsoft Speedbird 认证技能", "certified": True},
+    "unknown-slowbird":    {"description": "未认证的 Slowbird 技能",       "certified": False},
+}
+
 
 def get_certified_skills() -> list[str]:
     """Return sorted list of skill names where certified=True."""
@@ -91,3 +99,18 @@ def get_all_skill_names() -> list[str]:
 def export_catalog_json() -> dict[str, dict]:
     """Return the full catalog as a JSON-serializable dict."""
     return {k: dict(v) for k, v in SKILL_CATALOG.items()}
+
+
+def get_certified_managed_skills() -> list[str]:
+    """Return sorted list of managed skill names where certified=True."""
+    return sorted(k for k, v in MANAGED_SKILL_CATALOG.items() if v["certified"])
+
+
+def get_all_managed_skill_names() -> list[str]:
+    """Return all managed skill names sorted alphabetically."""
+    return sorted(MANAGED_SKILL_CATALOG.keys())
+
+
+def export_managed_catalog_json() -> dict[str, dict]:
+    """Return the managed skill catalog as a JSON-serializable dict."""
+    return {k: dict(v) for k, v in MANAGED_SKILL_CATALOG.items()}

@@ -26,9 +26,10 @@ interface SkillEntry {
   id: string;
   name: string;
   description: string;
-  source: 'builtin' | 'custom';
+  source: 'builtin' | 'custom' | 'managed';
   certified: boolean;
   enabled: boolean;
+  installed: boolean;
 }
 
 interface OpenClawAPI {
@@ -53,8 +54,9 @@ interface OpenClawAPI {
     set(key: string, value: any): Promise<void>;
   };
   skills: {
-    list(): Promise<{ builtin: SkillEntry[]; custom: SkillEntry[] }>;
+    list(): Promise<{ builtin: SkillEntry[]; custom: SkillEntry[]; managed: SkillEntry[] }>;
     updateAllowlist(allowBundled: string[]): Promise<void>;
+    updateManagedEntries(entries: Record<string, { enabled: boolean }>): Promise<void>;
   };
   chat: {
     isConnected(): Promise<boolean>;

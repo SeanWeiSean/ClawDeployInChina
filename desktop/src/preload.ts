@@ -48,6 +48,8 @@ contextBridge.exposeInMainWorld("openclaw", {
     list: () => ipcRenderer.invoke("skills:list"),
     updateAllowlist: (allowBundled: string[]) =>
       ipcRenderer.invoke("skills:update-allowlist", allowBundled),
+    updateManagedEntries: (entries: Record<string, { enabled: boolean }>) =>
+      ipcRenderer.invoke("skills:update-managed-entries", entries),
   },
 
   // --- Chat (session-based via WebSocket gateway protocol) ---
