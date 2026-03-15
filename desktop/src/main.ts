@@ -8,11 +8,15 @@ import { createTray, updateTrayMenu } from "./tray";
 import Store from "electron-store";
 import { verifySkillIntegrity, generateAndSignSnapshot, getSkillSourceDirs, type IntegrityResult } from "./skill-integrity";
 
-// Disable GPU hardware acceleration to prevent FATAL crash on RDP / VMs
-// where GPU DLLs are missing (exit_code -1073741515 = STATUS_DLL_NOT_FOUND)
-app.disableHardwareAcceleration();
-app.commandLine.appendSwitch("no-sandbox");
-app.commandLine.appendSwitch("disable-gpu");
+// Disable GPU on RDP sessions / headless VMs where GPU DLLs are missing.
+// On machines with a real GPU, hardware acceleration is used normally.
+const isRemoteSession = process.env.SESSIONNAME?.startsWith("RDP-")
+  || process.env.SESSIONNAME === "Console" && !process.env.DISPLAY;
+if (isRemoteSession || process.env.ELECTRON_DISABLE_GPU === "1") {
+  app.disableHardwareAcceleration();
+  app.commandLine.appendSwitch("no-sandbox");
+  app.commandLine.appendSwitch("disable-gpu");
+}
 
 // Handle EPIPE errors on stdout/stderr (happens when parent terminal closes)
 process.on("uncaughtException", (err: NodeJS.ErrnoException) => {
