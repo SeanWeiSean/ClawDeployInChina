@@ -950,6 +950,10 @@ class WindowsSetup:
         # ── Deploy bundled managed skills to ~/.openclaw/skills/ ──
         self._deploy_managed_skills(openclaw_dir)
 
+        # ── Skill integrity snapshot (SHA-256 hashes + Ed25519 signature) ──
+        # Must run AFTER deploying managed skills so the snapshot includes them.
+        self._generate_skill_snapshot(openclaw_dir)
+
         # ── .env file (secrets) — only write if api_key is set ──
         env_path = openclaw_dir / ".env"
         if api_key:
@@ -972,6 +976,38 @@ class WindowsSetup:
         self._register_rollback("删除配置文件", _rollback_config)
 
         return True
+
+    def _generate_skill_snapshot(self, openclaw_dir: Path) -> None:
+        """Run the Node.js script to generate skill integrity snapshot."""
+        node_exe = self.node_dir / "node.exe"
+        if not node_exe.exists():
+            self.log.warn("Node.js not found — skipping skill integrity snapshot")
+            return
+
+        # Locate the snapshot script (bundled in PyInstaller or in project root)
+        import sys as _sys
+        if getattr(_sys, 'frozen', False) and hasattr(_sys, '_MEIPASS'):
+            script = Path(_sys._MEIPASS) / "scripts" / "generate-skill-snapshot.js"
+        else:
+            script = Path.cwd() / "scripts" / "generate-skill-snapshot.js"
+
+        if not script.exists():
+            self.log.warn(f"Snapshot script not found at {script} — skipping")
+            return
+
+        try:
+            result = subprocess.run(
+                [str(node_exe), str(script), "--state-dir", str(openclaw_dir)],
+                capture_output=True, text=True, timeout=60,
+            )
+            if result.returncode == 0:
+                self.log.success("Skill integrity snapshot generated")
+                for line in result.stdout.strip().splitlines():
+                    self.log.info(f"  {line}")
+            else:
+                self.log.warn(f"Snapshot generation failed: {result.stderr.strip()}")
+        except Exception as e:
+            self.log.warn(f"Snapshot generation failed (non-fatal): {e}")
 
     def run_onboard(self) -> bool:
         """Install gateway scheduled task via openclaw daemon install (elevated)."""

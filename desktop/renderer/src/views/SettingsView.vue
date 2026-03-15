@@ -497,6 +497,7 @@
       </div>
     </div>
   </div>
+
 </template>
 
 <script setup lang="ts">
@@ -613,6 +614,7 @@ async function toggleManagedSkill(skillId: string, enabled: boolean) {
     ElMessage.error("托管技能配置更新失败: " + (err.message || err));
   }
 }
+
 
 // --- Brave Search API ---
 const braveApiKey = ref("");

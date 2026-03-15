@@ -6,6 +6,7 @@ import { ChildProcess, spawn } from "child_process";
 import { GatewayClient, type ChatEventPayload } from "./gateway-client";
 import { createTray, updateTrayMenu } from "./tray";
 import Store from "electron-store";
+import { verifySkillIntegrity, generateAndSignSnapshot, getSkillSourceDirs, type IntegrityResult } from "./skill-integrity";
 
 // Handle EPIPE errors on stdout/stderr (happens when parent terminal closes)
 process.on("uncaughtException", (err: NodeJS.ErrnoException) => {
@@ -53,6 +54,40 @@ let gwClient: GatewayClient | null = null;
 let gatewayPort = 0;
 let gatewayToken = "";
 let gatewayStatus = "stopped";
+let pendingIntegrityResult: IntegrityResult | null = null;
+
+// ---------------------------------------------------------------------------
+// Skill file watcher — detects mid-session tampering
+// ---------------------------------------------------------------------------
+let skillWatchers: fs.FSWatcher[] = [];
+let watcherDebounceTimer: ReturnType<typeof setTimeout> | null = null;
+
+function startSkillFileWatcher(): void {
+  // Clean up any existing watchers
+  for (const w of skillWatchers) { try { w.close(); } catch {} }
+  skillWatchers = [];
+
+  for (const { baseDir } of getSkillSourceDirs()) {
+    if (!fs.existsSync(baseDir)) continue;
+    try {
+      const watcher = fs.watch(baseDir, { recursive: true }, () => {
+        // Debounce — multiple FS events fire for a single change
+        if (watcherDebounceTimer) clearTimeout(watcherDebounceTimer);
+        watcherDebounceTimer = setTimeout(() => {
+          console.log("Skill file change detected — running integrity check...");
+          const result = verifySkillIntegrity();
+          if (!result.valid && mainWindow) {
+            mainWindow.webContents.send("skills:integrity-alert", result);
+          }
+        }, 2000);
+      });
+      skillWatchers.push(watcher);
+      console.log(`Watching skill directory: ${baseDir}`);
+    } catch (err) {
+      console.warn(`Failed to watch ${baseDir}:`, err);
+    }
+  }
+}
 
 // ---------------------------------------------------------------------------
 // Path helpers
@@ -480,6 +515,23 @@ function registerIpcHandlers(): void {
     }
   );
 
+  ipcMain.handle("skills:integrity-check", (): IntegrityResult => {
+    return verifySkillIntegrity();
+  });
+
+  ipcMain.handle("skills:generate-snapshot", () => {
+    generateAndSignSnapshot();
+  });
+
+  ipcMain.handle("skills:pending-integrity-result", (): IntegrityResult | null => {
+    return pendingIntegrityResult;
+  });
+
+  ipcMain.handle("skills:accept-integrity-changes", () => {
+    generateAndSignSnapshot();
+    pendingIntegrityResult = null;
+  });
+
   // --- Chat (WebSocket gateway protocol) ---
   ipcMain.handle("chat:send-message", async (_event, params: { sessionKey: string; message: string }) => {
     if (!gwClient?.connected) throw new Error("Gateway not connected");
@@ -729,6 +781,17 @@ app.whenReady().then(async () => {
   };
   createTray(trayCallbacks);
 
+  // Skill integrity check — must run BEFORE loading renderer so
+  // pendingIntegrityResult is ready when App.vue calls the IPC.
+  const integrityResult = verifySkillIntegrity();
+  if (!integrityResult.snapshotExists) {
+    console.log("No skill integrity snapshot found — generating baseline (installer may not have run)...");
+    generateAndSignSnapshot();
+  } else if (!integrityResult.valid) {
+    console.log("Skill integrity check failed — changes detected");
+    pendingIntegrityResult = integrityResult;
+  }
+
   // Load the Vue renderer UI
   if (isDev) {
     // Poll until Vite dev server is ready (up to 60s)
@@ -751,7 +814,9 @@ app.whenReady().then(async () => {
     );
   }
 
-  // Start the gateway in the background
+  // Watch skill directories for mid-session changes
+  startSkillFileWatcher();
+
   startGateway().catch((err) => {
     console.error("Failed to start gateway:", err);
   });

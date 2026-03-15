@@ -32,6 +32,22 @@ interface SkillEntry {
   installed: boolean;
 }
 
+interface IntegrityChange {
+  skill: string;
+  source: string;
+  file: string;
+  type: "modified" | "added" | "removed";
+  expected?: string;
+  actual?: string;
+}
+
+interface IntegrityResult {
+  valid: boolean;
+  signatureValid: boolean;
+  snapshotExists: boolean;
+  changes: IntegrityChange[];
+}
+
 interface OpenClawAPI {
   gateway: {
     getPort(): Promise<number>;
@@ -57,6 +73,11 @@ interface OpenClawAPI {
     list(): Promise<{ builtin: SkillEntry[]; custom: SkillEntry[]; managed: SkillEntry[] }>;
     updateAllowlist(allowBundled: string[]): Promise<void>;
     updateManagedEntries(entries: Record<string, { enabled: boolean }>): Promise<void>;
+    integrityCheck(): Promise<IntegrityResult>;
+    pendingIntegrityResult(): Promise<IntegrityResult | null>;
+    acceptIntegrityChanges(): Promise<void>;
+    generateSnapshot(): Promise<void>;
+    onIntegrityAlert(callback: (result: IntegrityResult) => void): () => void;
   };
   chat: {
     isConnected(): Promise<boolean>;

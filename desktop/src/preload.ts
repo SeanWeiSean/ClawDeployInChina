@@ -50,6 +50,15 @@ contextBridge.exposeInMainWorld("openclaw", {
       ipcRenderer.invoke("skills:update-allowlist", allowBundled),
     updateManagedEntries: (entries: Record<string, { enabled: boolean }>) =>
       ipcRenderer.invoke("skills:update-managed-entries", entries),
+    integrityCheck: () => ipcRenderer.invoke("skills:integrity-check"),
+    pendingIntegrityResult: () => ipcRenderer.invoke("skills:pending-integrity-result"),
+    acceptIntegrityChanges: () => ipcRenderer.invoke("skills:accept-integrity-changes"),
+    generateSnapshot: () => ipcRenderer.invoke("skills:generate-snapshot"),
+    onIntegrityAlert: (callback: (result: any) => void) => {
+      const handler = (_event: any, result: any) => callback(result);
+      ipcRenderer.on("skills:integrity-alert", handler);
+      return () => ipcRenderer.removeListener("skills:integrity-alert", handler);
+    },
   },
 
   // --- Chat (session-based via WebSocket gateway protocol) ---

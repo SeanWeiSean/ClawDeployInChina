@@ -5,7 +5,7 @@ a = Analysis(
     ['deploy.py'],
     pathex=[],
     binaries=[],
-    datas=[('microclaw.ico', '.'), ('microclaw.png', '.'), ('dist/microclaw-portable.zip', '.'), ('skills', 'skills')],
+    datas=[('microclaw.ico', '.'), ('microclaw.png', '.'), ('dist/microclaw-portable.zip', '.'), ('scripts/generate-skill-snapshot.js', 'scripts'), ('skills', 'skills')],
     hiddenimports=[],
     hookspath=[],
     hooksconfig={},
