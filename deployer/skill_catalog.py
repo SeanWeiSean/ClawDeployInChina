@@ -81,9 +81,10 @@ SKILL_CATALOG: dict[str, SkillInfo] = {
 # Skills installed to ~/.agents/skills/ that appear here get certification metadata.
 # Skills NOT in this catalog are treated as uncertified and disabled by default.
 MANAGED_SKILL_CATALOG: dict[str, SkillInfo] = {
-    "microsoft-speedbird": {"description": "Microsoft Speedbird 认证技能",                              "certified": True},
-    "microsoft-workiq":    {"description": "Microsoft 365 搜索与交互（邮件/文件/聊天/日历/人员）via WorkIQ MCP", "certified": True},
-    "unknown-slowbird":    {"description": "未认证的 Slowbird 技能",                                    "certified": False},
+    "microsoft-speedbird":        {"description": "Microsoft Speedbird 认证技能",                              "certified": True},
+    "microsoft-workiq":           {"description": "Microsoft 365 搜索与交互（邮件/文件/聊天/日历/人员）via WorkIQ MCP", "certified": True},
+    "microsoft-browser-control":  {"description": "本地浏览器自动化控制（导航/截图/表单/数据提取）via Playwright",       "certified": True},
+    "unknown-slowbird":           {"description": "未认证的 Slowbird 技能",                                    "certified": False},
 }
 
 
