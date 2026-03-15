@@ -8,6 +8,16 @@ import { createTray, updateTrayMenu } from "./tray";
 import Store from "electron-store";
 import { verifySkillIntegrity, generateAndSignSnapshot, getSkillSourceDirs, type IntegrityResult } from "./skill-integrity";
 
+// Disable GPU on RDP sessions / headless VMs where GPU DLLs are missing.
+// On machines with a real GPU, hardware acceleration is used normally.
+const isRemoteSession = process.env.SESSIONNAME?.startsWith("RDP-")
+  || process.env.SESSIONNAME === "Console" && !process.env.DISPLAY;
+if (isRemoteSession || process.env.ELECTRON_DISABLE_GPU === "1") {
+  app.disableHardwareAcceleration();
+  app.commandLine.appendSwitch("no-sandbox");
+  app.commandLine.appendSwitch("disable-gpu");
+}
+
 // Handle EPIPE errors on stdout/stderr (happens when parent terminal closes)
 process.on("uncaughtException", (err: NodeJS.ErrnoException) => {
   if (err.code === "EPIPE") {
@@ -809,9 +819,14 @@ app.whenReady().then(async () => {
     };
     await waitForVite();
   } else {
-    await mainWindow.loadFile(
-      path.join(__dirname, "../renderer/dist/index.html")
-    );
+    const indexPath = path.join(__dirname, "../renderer/dist/index.html");
+    try {
+      await mainWindow.loadFile(indexPath);
+    } catch (err) {
+      console.error("Failed to load renderer, retrying:", err);
+      await new Promise((r) => setTimeout(r, 1000));
+      await mainWindow.loadFile(indexPath);
+    }
   }
 
   // Watch skill directories for mid-session changes

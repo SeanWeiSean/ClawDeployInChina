@@ -241,6 +241,51 @@ class WindowsSetup:
         except Exception:
             pass
 
+    def _prepend_before_system_nodejs(self, directory: str):
+        """Insert *directory* before any ``…\\nodejs\\`` entry in the system PATH.
+
+        On Windows the effective PATH = system PATH + user PATH, so a
+        ``C:\\Program Files\\nodejs\\`` entry in the system PATH always
+        shadows anything the user PATH provides.  This method ensures our
+        managed node directory is evaluated first.
+        """
+        try:
+            import winreg
+            key = winreg.OpenKey(
+                winreg.HKEY_LOCAL_MACHINE,
+                r"SYSTEM\CurrentControlSet\Control\Session Manager\Environment",
+                0, winreg.KEY_ALL_ACCESS,
+            )
+            current, _ = winreg.QueryValueEx(key, "Path")
+            parts = [p for p in current.split(";") if p]
+            dir_lower = directory.lower()
+
+            # Already present – nothing to do
+            if dir_lower in (p.lower() for p in parts):
+                winreg.CloseKey(key)
+                return
+
+            # Find the first …\nodejs\ entry and insert before it
+            insert_idx = None
+            for idx, p in enumerate(parts):
+                if "nodejs" in p.lower():
+                    insert_idx = idx
+                    break
+
+            if insert_idx is not None:
+                parts.insert(insert_idx, directory)
+            else:
+                # No nodejs in system PATH – just prepend
+                parts.insert(0, directory)
+
+            winreg.SetValueEx(key, "Path", 0, winreg.REG_EXPAND_SZ, ";".join(parts))
+            winreg.CloseKey(key)
+            self.log.info(f"  Inserted {directory} before system nodejs in machine PATH")
+        except PermissionError:
+            self.log.warn("  No admin rights to update system PATH – user PATH only")
+        except Exception as e:
+            self.log.warn(f"  Could not update system PATH: {e}")
+
     # ────────────────────── Node.js ──────────────────────
 
     def _get_arch(self) -> str:
@@ -313,8 +358,13 @@ class WindowsSetup:
         return fallback
 
     def check_node_windows(self) -> bool:
-        """Check if a suitable Node.js is available on Windows."""
-        # Check our managed install first
+        """Check if a suitable Node.js is available on Windows.
+
+        Only the managed install (inside node_dir) counts as a pass.
+        A system-level node is logged for diagnostics but never accepted,
+        because its version/PATH-priority is outside our control.
+        """
+        # Check our managed install first — only this is authoritative
         managed_node = self.node_dir / "node.exe"
         if managed_node.exists():
             ver = self._get_node_version(str(managed_node))
@@ -322,17 +372,15 @@ class WindowsSetup:
                 self.log.info(f"Node.js (managed) found: {ver}")
                 self._node_bin = managed_node.parent
                 return True
+            elif ver:
+                self.log.info(f"Managed Node.js {ver} is outdated (need ≥22.16.0), will reinstall")
 
-        # Check system PATH
+        # Log system node for diagnostics, but don't accept it
         node_path = shutil.which("node")
         if node_path:
             ver = self._get_node_version(node_path)
-            if ver and self._version_ok(ver):
-                self.log.info(f"Node.js (system) found: {ver} at {node_path}")
-                self._node_bin = Path(node_path).parent
-                return True
-            elif ver:
-                self.log.warn(f"Node.js {ver} found but need ≥22")
+            if ver:
+                self.log.info(f"Node.js (system) found: {ver} at {node_path} (will install managed copy)")
 
         return False
 
@@ -1750,14 +1798,14 @@ class WindowsSetup:
             return None
 
     def _version_ok(self, ver: str) -> bool:
-        """Check if version is >= 22.12.0 (OpenClaw minimum)."""
+        """Check if version is >= 22.16.0 (OpenClaw CLI minimum)."""
         try:
             parts = ver.lstrip("v").split(".")
             major = int(parts[0])
             minor = int(parts[1]) if len(parts) > 1 else 0
             if major > 22:
                 return True
-            if major == 22 and minor >= 12:
+            if major == 22 and minor >= 16:
                 return True
             return False
         except Exception:
@@ -1819,6 +1867,11 @@ class WindowsSetup:
 
             for d in added:
                 self.log.info(f"  Added to PATH: {d}")
+
+            # Also ensure our node_dir comes BEFORE system nodejs in
+            # the machine-level PATH (system PATH is evaluated first).
+            self._prepend_before_system_nodejs(str(self.node_dir))
+
             self.log.success("PATH updated (restart terminal to take effect)")
 
             # Register rollback
