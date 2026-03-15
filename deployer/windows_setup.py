@@ -1326,8 +1326,15 @@ class WindowsSetup:
                 f'{ico_arg}'
                 f'$s.Save()'
             )
+            # Use -EncodedCommand to avoid encoding/escaping issues with
+            # non-ASCII characters (e.g. Chinese Desktop folder names) and
+            # spaces in paths.
+            import base64
+            encoded = base64.b64encode(
+                ps_script.encode("utf-16-le")
+            ).decode("ascii")
             self._run(
-                ["powershell", "-NoProfile", "-Command", ps_script],
+                ["powershell", "-NoProfile", "-EncodedCommand", encoded],
                 capture_output=True, timeout=15,
             )
 
