@@ -8,6 +8,12 @@ import { createTray, updateTrayMenu } from "./tray";
 import Store from "electron-store";
 import { verifySkillIntegrity, generateAndSignSnapshot, getSkillSourceDirs, type IntegrityResult } from "./skill-integrity";
 
+// Disable GPU hardware acceleration to prevent FATAL crash on RDP / VMs
+// where GPU DLLs are missing (exit_code -1073741515 = STATUS_DLL_NOT_FOUND)
+app.disableHardwareAcceleration();
+app.commandLine.appendSwitch("no-sandbox");
+app.commandLine.appendSwitch("disable-gpu");
+
 // Handle EPIPE errors on stdout/stderr (happens when parent terminal closes)
 process.on("uncaughtException", (err: NodeJS.ErrnoException) => {
   if (err.code === "EPIPE") {
@@ -809,9 +815,14 @@ app.whenReady().then(async () => {
     };
     await waitForVite();
   } else {
-    await mainWindow.loadFile(
-      path.join(__dirname, "../renderer/dist/index.html")
-    );
+    const indexPath = path.join(__dirname, "../renderer/dist/index.html");
+    try {
+      await mainWindow.loadFile(indexPath);
+    } catch (err) {
+      console.error("Failed to load renderer, retrying:", err);
+      await new Promise((r) => setTimeout(r, 1000));
+      await mainWindow.loadFile(indexPath);
+    }
   }
 
   // Watch skill directories for mid-session changes
