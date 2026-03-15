@@ -696,6 +696,64 @@ class WindowsSetup:
                 pass
         self._register_rollback("卸载 OpenClaw", _rollback_openclaw)
 
+    # ────────────────────── Managed Skills ──────────────────────
+
+    def _get_bundled_skills_dir(self) -> Path | None:
+        """Locate the skills/ directory bundled with the deployer.
+
+        Searches (in order):
+          1. PyInstaller _MEIPASS (frozen exe)
+          2. Next to the running script / exe
+          3. Repo root (parent of deployer/)
+        Returns None if not found.
+        """
+        import sys
+        candidates: list[Path] = []
+        if getattr(sys, 'frozen', False) and hasattr(sys, '_MEIPASS'):
+            candidates.append(Path(sys._MEIPASS) / "skills")
+        if getattr(sys, 'frozen', False):
+            candidates.append(Path(sys.executable).parent / "skills")
+        # Repo layout: deployer/ is a sibling of skills/
+        candidates.append(Path(__file__).resolve().parent.parent / "skills")
+        for p in candidates:
+            if p.is_dir():
+                return p
+        return None
+
+    def _deploy_managed_skills(self, openclaw_dir: Path) -> None:
+        """Copy bundled managed skills into ~/.openclaw/skills/.
+
+        Only copies skills that exist in MANAGED_SKILL_CATALOG.
+        Existing skill directories are overwritten to ensure updates propagate.
+        """
+        from deployer.skill_catalog import MANAGED_SKILL_CATALOG
+
+        src_dir = self._get_bundled_skills_dir()
+        if src_dir is None:
+            self.log.info("  No bundled skills directory found — skipping managed skill deployment")
+            return
+
+        dest_dir = openclaw_dir / "skills"
+        deployed = 0
+        for skill_name in MANAGED_SKILL_CATALOG:
+            skill_src = src_dir / skill_name
+            if not skill_src.is_dir():
+                continue
+            skill_dest = dest_dir / skill_name
+            try:
+                if skill_dest.exists():
+                    shutil.rmtree(skill_dest)
+                shutil.copytree(skill_src, skill_dest)
+                deployed += 1
+                self.log.info(f"  Deployed managed skill: {skill_name}")
+            except Exception as e:
+                self.log.warn(f"  Failed to deploy skill '{skill_name}': {e}")
+
+        if deployed:
+            self.log.success(f"Deployed {deployed} managed skill(s) to {dest_dir}")
+        else:
+            self.log.info("  No managed skills to deploy")
+
     # ────────────────────── Configure + Gateway ──────────────────────
 
     def write_config(self) -> bool:
@@ -888,6 +946,9 @@ class WindowsSetup:
             self.log.success(f"Managed skill catalog written to {managed_catalog_path}")
         except Exception as e:
             self.log.warn(f"Managed skill catalog write failed (non-fatal): {e}")
+
+        # ── Deploy bundled managed skills to ~/.openclaw/skills/ ──
+        self._deploy_managed_skills(openclaw_dir)
 
         # ── .env file (secrets) — only write if api_key is set ──
         env_path = openclaw_dir / ".env"
@@ -1326,8 +1387,15 @@ class WindowsSetup:
                 f'{ico_arg}'
                 f'$s.Save()'
             )
+            # Use -EncodedCommand to avoid encoding/escaping issues with
+            # non-ASCII characters (e.g. Chinese Desktop folder names) and
+            # spaces in paths.
+            import base64
+            encoded = base64.b64encode(
+                ps_script.encode("utf-16-le")
+            ).decode("ascii")
             self._run(
-                ["powershell", "-NoProfile", "-Command", ps_script],
+                ["powershell", "-NoProfile", "-EncodedCommand", encoded],
                 capture_output=True, timeout=15,
             )
 

@@ -119,3 +119,43 @@ python deploy.py
 ## License
 
 MIT
+
+---
+
+## WorkIQ — M365 Connector（MCP 插件）
+
+通过 WorkIQ M365 Connector，可以让任何 OpenClaw agent 访问 Microsoft 365 数据（邮件、日历、文件等）。
+
+### 使用步骤
+
+#### 1. 启动 M365 Connector 服务
+
+在工作电脑上运行：
+
+```bash
+npx m365connector
+```
+
+> 如果没有 npx，可以让 Claude Code 帮你安装（`npm install -g npx`），或直接安装 Node.js。
+
+#### 2. 安装浏览器插件
+
+浏览器插件已放在仓库的 `WorkIQ/` 目录下（`m365-connector-v1.2.4 2.zip`）。
+
+1. 解压 zip 文件
+2. 在 Chrome/Edge 中打开 `chrome://extensions/`，开启「开发者模式」
+3. 点击「加载已解压的扩展程序」，选择解压后的文件夹
+4. 插件安装后会弹出登录页面，完成登录即可
+
+#### 3. 在 Agent 中配置 MCP
+
+在任意 agent 的配置中添加以下 MCP 服务：
+
+```json
+"M365Connector": {
+  "type": "http",
+  "url": "http://127.0.0.1:52366/mcp"
+}
+```
+
+配置完成后，agent 即可通过 MCP 协议访问你的 M365 数据。

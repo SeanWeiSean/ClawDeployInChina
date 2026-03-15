@@ -2,7 +2,7 @@ import { app, BrowserWindow, ipcMain, Menu } from "electron";
 import * as path from "path";
 import * as fs from "fs";
 import * as http from "http";
-import { GatewayManager } from "./gateway-manager";
+import { ChildProcess, spawn } from "child_process";
 import { GatewayClient, type ChatEventPayload } from "./gateway-client";
 import { createTray, updateTrayMenu } from "./tray";
 import Store from "electron-store";
@@ -48,7 +48,7 @@ const settingsStore = new Store<{
 });
 
 let mainWindow: BrowserWindow | null = null;
-let gatewayManager: GatewayManager | null = null;
+let gatewayProcess: ChildProcess | null = null;
 let gwClient: GatewayClient | null = null;
 let gatewayPort = 0;
 let gatewayToken = "";
@@ -161,6 +161,68 @@ function checkExistingGateway(port: number): Promise<boolean> {
   });
 }
 
+/** Resolve path to node.exe */
+function resolveNodePath(): string {
+  if (app.isPackaged) {
+    const bundled = path.join(process.resourcesPath, "node.exe");
+    if (fs.existsSync(bundled)) return bundled;
+  }
+  const ocNode = process.env.USERPROFILE
+    ? path.join(process.env.USERPROFILE, ".openclaw-node", "node.exe")
+    : "";
+  if (ocNode && fs.existsSync(ocNode)) return ocNode;
+  return "node";
+}
+
+/** Resolve path to openclaw entry */
+function resolveOpenClawEntry(): string {
+  if (app.isPackaged) {
+    const bundled = path.join(process.resourcesPath, "openclaw", "openclaw.mjs");
+    if (fs.existsSync(bundled)) return bundled;
+  }
+  const candidates = [
+    process.env.USERPROFILE
+      ? path.join(process.env.USERPROFILE, ".openclaw-node", "node_modules", "openclaw", "openclaw.mjs")
+      : "",
+    process.env.USERPROFILE
+      ? path.join(process.env.USERPROFILE, ".openclaw-node", "node_modules", "openclaw", "dist", "index.js")
+      : "",
+    process.env.APPDATA
+      ? path.join(process.env.APPDATA, "npm", "node_modules", "openclaw", "openclaw.mjs")
+      : "",
+    process.env.APPDATA
+      ? path.join(process.env.APPDATA, "npm", "node_modules", "openclaw", "dist", "index.js")
+      : "",
+  ];
+  for (const p of candidates) {
+    if (p && fs.existsSync(p)) return p;
+  }
+  return candidates[0];
+}
+
+/** Wait for gateway health check to pass */
+async function waitForGatewayReady(port: number, timeoutMs = 30000): Promise<boolean> {
+  const start = Date.now();
+  while (Date.now() - start < timeoutMs) {
+    const ok = await checkExistingGateway(port);
+    if (ok) return true;
+    await new Promise((r) => setTimeout(r, 500));
+  }
+  return false;
+}
+
+/** Stop the gateway CMD process */
+function stopGatewayProcess(): void {
+  if (gatewayProcess && gatewayProcess.pid) {
+    try {
+      spawn("taskkill", ["/pid", String(gatewayProcess.pid), "/T", "/F"], {
+        windowsHide: true,
+      });
+    } catch {}
+    gatewayProcess = null;
+  }
+}
+
 async function startGateway(): Promise<void> {
   // Read config to get token and configured port
   const config = readConfig();
@@ -184,31 +246,59 @@ async function startGateway(): Promise<void> {
     }
   }
 
-  // No existing gateway — start our own
-  gatewayManager = new GatewayManager(getOpenClawStateDir(), configuredPort);
+  // No existing gateway — launch in a visible CMD window
+  gatewayPort = configuredPort;
+  const stateDir = getOpenClawStateDir();
+  const nodePath = resolveNodePath();
+  const entryPath = resolveOpenClawEntry();
 
-  const trayCallbacks = {
-    onShowWindow: () => {
-      if (mainWindow && !mainWindow.isDestroyed()) {
-        mainWindow.show();
-        mainWindow.focus();
-      }
+  if (!fs.existsSync(nodePath)) {
+    console.error(`node.exe not found at ${nodePath}`);
+    gatewayStatus = "failed";
+    mainWindow?.webContents.send("gateway:status", "failed");
+    return;
+  }
+  if (!fs.existsSync(entryPath)) {
+    console.error(`openclaw entry not found at ${entryPath}`);
+    gatewayStatus = "failed";
+    mainWindow?.webContents.send("gateway:status", "failed");
+    return;
+  }
+
+  const cmdLine = `"${nodePath}" "${entryPath}" gateway run --port ${configuredPort} --bind loopback --force --allow-unconfigured`;
+  console.log(`Launching gateway CMD: ${cmdLine}`);
+
+  gatewayProcess = spawn("cmd.exe", ["/K", `title OpenClaw Gateway && ${cmdLine}`], {
+    cwd: path.dirname(entryPath),
+    env: {
+      ...process.env,
+      OPENCLAW_STATE_DIR: stateDir,
+      NODE_ENV: "production",
     },
-    onRestartGateway: () => gatewayManager?.restart(),
-  };
-
-  gatewayManager.on("status", (status: string) => {
-    gatewayStatus = status;
-    updateTrayMenu(status, trayCallbacks);
-    mainWindow?.webContents.send("gateway:status", status);
+    detached: true,
+    stdio: "ignore",
   });
 
-  gatewayManager.on("log", (msg: string) => {
-    mainWindow?.webContents.send("gateway:log", msg);
+  gatewayProcess.on("error", (err) => {
+    console.error("Gateway CMD spawn error:", err);
+    gatewayProcess = null;
+    gatewayStatus = "failed";
+    mainWindow?.webContents.send("gateway:status", "failed");
   });
 
-  gatewayPort = await gatewayManager.start();
-  connectGatewayWs();
+  // Wait for gateway to become ready
+  gatewayStatus = "starting";
+  mainWindow?.webContents.send("gateway:status", "starting");
+
+  const ready = await waitForGatewayReady(configuredPort);
+  if (ready) {
+    gatewayStatus = "running";
+    mainWindow?.webContents.send("gateway:status", "running");
+    connectGatewayWs();
+  } else {
+    gatewayStatus = "timeout";
+    mainWindow?.webContents.send("gateway:status", "timeout");
+  }
 }
 
 // ---------------------------------------------------------------------------
@@ -267,21 +357,9 @@ function registerIpcHandlers(): void {
   ipcMain.handle("gateway:get-token", () => gatewayToken);
   ipcMain.handle("gateway:get-status", () => gatewayStatus);
   ipcMain.handle("gateway:restart", async () => {
-    if (gatewayManager) {
-      gatewayPort = await gatewayManager.restart();
-    } else {
-      // External gateway (e.g. scheduled task) — restart via CLI async
-      const { exec } = require("child_process");
-      const run = (cmd: string, timeout: number) =>
-        new Promise<void>((resolve) => {
-          const child = exec(cmd, { timeout }, () => resolve());
-          child.on("error", () => resolve());
-        });
-      await run("openclaw daemon stop", 10000);
-      await run("openclaw daemon start", 15000);
-      // Reconnect WebSocket
-      connectGatewayWs();
-    }
+    stopGatewayProcess();
+    await new Promise((r) => setTimeout(r, 1000));
+    await startGateway();
   });
 
   // --- Config ---
@@ -647,7 +725,7 @@ app.whenReady().then(async () => {
         mainWindow.focus();
       }
     },
-    onRestartGateway: () => gatewayManager?.restart(),
+    onRestartGateway: () => { stopGatewayProcess(); startGateway(); },
   };
   createTray(trayCallbacks);
 
@@ -688,7 +766,7 @@ app.on("window-all-closed", () => {
 app.on("before-quit", () => {
   (app as any).isQuitting = true;
   gwClient?.stop();
-  gatewayManager?.stop();
+  stopGatewayProcess();
 });
 
 app.on("activate", () => {
