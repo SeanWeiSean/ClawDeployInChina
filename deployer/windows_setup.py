@@ -1600,17 +1600,40 @@ class WindowsSetup:
     # ────────────────────── Uninstall ──────────────────────
 
     def _uninstall_stop_daemon(self) -> None:
-        """Stop the openclaw daemon."""
-        env = self._get_env()
-        cmd = self._find_openclaw_cmd()
-        if cmd:
-            self.log.step("停止守护进程…")
-            try:
-                self._run(cmd + ["daemon", "stop"],
-                          capture_output=True, timeout=15, env=env)
-                self.log.info("  守护进程已停止")
-            except Exception:
-                self.log.info("  守护进程未运行或已停止")
+        """Stop the openclaw daemon (scheduled task)."""
+        self.log.step("停止守护进程…")
+
+        # Fast path: check if the scheduled task even exists before invoking
+        # the slow openclaw CLI (which takes 20-80s to cold-start via Node.js).
+        try:
+            r = self._run(
+                ["schtasks", "/Query", "/TN", "OpenClaw Gateway"],
+                capture_output=True, text=True, timeout=10,
+            )
+            if r.returncode != 0:
+                self.log.info("  守护进程未安装，跳过")
+                return
+        except Exception:
+            self.log.info("  守护进程未安装，跳过")
+            return
+
+        # Task exists — stop and unregister it directly via schtasks
+        try:
+            self._run(
+                ["schtasks", "/End", "/TN", "OpenClaw Gateway"],
+                capture_output=True, timeout=10,
+            )
+            self.log.info("  已停止守护进程任务")
+        except Exception:
+            pass
+        try:
+            self._run(
+                ["schtasks", "/Delete", "/TN", "OpenClaw Gateway", "/F"],
+                capture_output=True, timeout=10,
+            )
+            self.log.info("  已删除守护进程任务")
+        except Exception:
+            pass
 
     @staticmethod
     def _clean_gateway_lock_files(log=None) -> int:
@@ -1635,17 +1658,22 @@ class WindowsSetup:
         return removed
 
     def _uninstall_stop_gateway(self) -> None:
-        """Stop the openclaw gateway."""
-        env = self._get_env()
-        cmd = self._find_openclaw_cmd()
-        if cmd:
-            self.log.step("停止网关服务…")
-            try:
-                self._run(cmd + ["gateway", "stop"],
-                          capture_output=True, timeout=15, env=env)
-                self.log.info("  网关已停止")
-            except Exception:
-                self.log.info("  网关未运行或已停止")
+        """Stop the openclaw gateway process."""
+        self.log.step("停止网关服务…")
+        # Kill node.exe processes running the gateway directly — much faster
+        # than invoking `openclaw gateway stop` which cold-starts Node.js CLI.
+        try:
+            r = self._run(
+                ["taskkill", "/F", "/IM", "node.exe", "/T"],
+                capture_output=True, text=True, timeout=10,
+            )
+            if r.returncode == 0:
+                self.log.info("  已终止 node.exe 进程")
+                time.sleep(2)
+            else:
+                self.log.info("  node.exe 未运行")
+        except Exception:
+            self.log.info("  node.exe 未运行")
         # Always clean stale lock files (they survive force-kill)
         self._clean_gateway_lock_files(self.log)
 
@@ -1768,7 +1796,7 @@ class WindowsSetup:
             self.log.info(f"  已删除 {official_dir}")
 
     def _uninstall_clean_desktop(self) -> None:
-        """Remove the MicroClaw desktop client directory."""
+        """Remove the MicroClaw desktop client directory and app data."""
         self.log.step("删除桌面客户端…")
         install_dir = DEFAULT_DESKTOP_DIR
         if install_dir.exists():
@@ -1781,6 +1809,15 @@ class WindowsSetup:
             self.log.info(f"  已删除 {install_dir}")
         else:
             self.log.info(f"  {install_dir} 不存在，跳过")
+
+        # Clean Electron app data (Local Storage, chat history, caches)
+        appdata = os.environ.get("APPDATA", "")
+        if appdata:
+            for name in ("microclaw", "MicroClawDesktop"):
+                app_dir = Path(appdata) / name
+                if app_dir.exists():
+                    shutil.rmtree(app_dir, ignore_errors=True)
+                    self.log.info(f"  已删除应用数据 {app_dir}")
 
     def _uninstall_clean_config(self) -> None:
         """Remove ~/.openclaw config directory."""
