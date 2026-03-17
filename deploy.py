@@ -253,11 +253,12 @@ class DeployerApp(tk.Tk):
 
         self._pages.append(p1)
 
-        # --- Page 2: Installing ---
+        # --- Page 2: Installing / Uninstalling ---
         p2 = tk.Frame(self._page_area, bg=BG)
 
-        tk.Label(p2, text="正在安装", font=("Segoe UI", 14, "bold"),
-                 bg=BG, fg=FG, anchor="w").pack(fill="x", padx=24, pady=(20, 8))
+        self._page2_title = tk.Label(p2, text="正在安装", font=("Segoe UI", 14, "bold"),
+                 bg=BG, fg=FG, anchor="w")
+        self._page2_title.pack(fill="x", padx=24, pady=(20, 8))
 
         self._install_step_label = tk.Label(
             p2, text="准备中…", font=("Segoe UI", 10), bg=BG, fg=FG_DIM, anchor="w")
@@ -280,9 +281,9 @@ class DeployerApp(tk.Tk):
         self._progress_pct.pack(fill="x", padx=24)
 
         # Log output
-        log_label = tk.Label(p2, text="安装日志", font=("Segoe UI", 9),
+        self._log_label = tk.Label(p2, text="安装日志", font=("Segoe UI", 9),
                              bg=BG, fg=FG_DIM, anchor="w")
-        log_label.pack(fill="x", padx=24, pady=(8, 2))
+        self._log_label.pack(fill="x", padx=24, pady=(8, 2))
 
         self._log_text = tk.Text(
             p2, height=14, bg="#1e1e1e", fg="#cccccc",
@@ -428,6 +429,10 @@ class DeployerApp(tk.Tk):
         if install_dir:
             os.environ["OPENCLAW_NODE_DIR"] = install_dir
 
+        # Reset page 2 to install mode
+        self._page2_title.config(text="正在安装")
+        self._log_label.config(text="安装日志")
+
         # Switch to install page
         self._show_page(2)
 
@@ -560,20 +565,48 @@ class DeployerApp(tk.Tk):
         ):
             return
         self._running = True
+
+        # Switch page 2 to uninstall mode
+        self._page2_title.config(text="正在卸载")
+        self._log_label.config(text="卸载日志")
+        self._progress.config(mode="determinate")
+        self._progress["value"] = 0
+        self._progress_pct.config(text="0%")
+        self._install_step_label.config(text="准备卸载…")
+
         self._show_page(2)
-        self._install_step_label.config(text="正在卸载…")
-        self._progress.config(mode="indeterminate")
-        self._progress.start(15)
-        self._progress_pct.config(text="")
         self._btn_cancel.config(state="disabled")
+        self._btn_next.config(text="卸载中…", state="disabled", bg="#b0b0b0")
+
         threading.Thread(target=self._uninstall_thread, daemon=True).start()
 
     def _uninstall_thread(self):
         log = self.logger
         ws = WindowsSetup(self.config, log)
+
+        steps = [
+            (5,  "正在停止守护进程…",       ws._uninstall_stop_daemon),
+            (12, "正在停止网关服务…",       ws._uninstall_stop_gateway),
+            (20, "正在关闭桌面客户端…",     ws._uninstall_kill_desktop),
+            (35, "正在执行 openclaw 卸载…", ws._uninstall_openclaw),
+            (50, "正在卸载 npm 包…",        ws._uninstall_npm),
+            (65, "正在清理 Node 环境…",     ws._uninstall_clean_node),
+            (75, "正在清理官方客户端…",     ws._uninstall_clean_official),
+            (82, "正在删除桌面客户端…",     ws._uninstall_clean_desktop),
+            (90, "正在清理配置目录…",       ws._uninstall_clean_config),
+            (97, "正在删除快捷方式…",       ws._uninstall_clean_shortcuts),
+        ]
+
         try:
-            ws.uninstall()
+            for pct, label, fn in steps:
+                self._set_progress(pct, label)
+                try:
+                    fn()
+                except Exception as e:
+                    log.warn(f"{label} 异常: {e}")
+
             self._running = False
+            log.success("卸载完成")
             self._finish_uninstall_ok()
         except Exception as e:
             log.error(f"卸载异常: {e}")
@@ -582,9 +615,7 @@ class DeployerApp(tk.Tk):
 
     def _finish_uninstall_ok(self):
         def _do():
-            self._progress.stop()
-            self._progress.config(mode="determinate")
-            self._progress["value"] = 100
+            self._set_progress(100, "卸载完成！")
             self._complete_icon.config(text="✓", fg=SUCCESS)
             self._complete_title.config(text="卸载完成", fg=FG)
             self._complete_msg.config(text="MicroClaw 已从您的电脑中移除。")
@@ -593,8 +624,6 @@ class DeployerApp(tk.Tk):
 
     def _finish_uninstall_fail(self, msg: str):
         def _do():
-            self._progress.stop()
-            self._progress.config(mode="determinate")
             self._complete_icon.config(text="✗", fg=ERROR)
             self._complete_title.config(text="卸载失败", fg=ERROR)
             self._complete_msg.config(text=f"{msg}")
