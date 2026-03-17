@@ -316,6 +316,7 @@ class DeployerApp(tk.Tk):
             (30, "安装 Node.js…",       ws.install_node_windows),
             (40, "配置 npm 镜像…",      ws.setup_npm_mirror),
             (55, "安装 MicroClaw…",      ws.install_openclaw_windows),
+            (60, "优化启动速度…",       ws.warmup_compile_cache),
             (65, "配置系统 PATH…",      ws.add_to_path),
             (75, "写入配置文件…",       ws.write_config),
             (85, "安装桌面客户端…",     ws.install_desktop_client),
