@@ -464,16 +464,17 @@ class DeployerApp(tk.Tk):
         ws = WindowsSetup(self.config, log)
 
         steps = [
-            (5,  "正在检查 Git…",             ws.ensure_git),
-            (12, "正在检查 Node.js…",          ws.check_node_windows),
-            (28, "正在安装 Node.js…",          ws.install_node_windows),
-            (38, "正在配置 npm 镜像…",         ws.setup_npm_mirror),
-            (55, "正在安装 MicroClaw 核心…",    ws.install_openclaw_windows),
-            (65, "正在配置系统 PATH…",         ws.add_to_path),
-            (75, "正在写入配置文件…",          ws.write_config),
-            (85, "正在安装桌面客户端…",        ws.install_desktop_client),
-            (92, "正在创建桌面快捷方式…",      ws.create_desktop_shortcut),
-            (97, "正在验证安装…",              self._verify),
+            (5,  "检查 Git…",           ws.ensure_git),
+            (15, "检查 Node.js…",       ws.check_node_windows),
+            (30, "安装 Node.js…",       ws.install_node_windows),
+            (40, "配置 npm 镜像…",      ws.setup_npm_mirror),
+            (55, "安装 MicroClaw…",      ws.install_openclaw_windows),
+            (60, "优化启动速度…",       ws.warmup_compile_cache),
+            (65, "配置系统 PATH…",      ws.add_to_path),
+            (75, "写入配置文件…",       ws.write_config),
+            (85, "安装桌面客户端…",     ws.install_desktop_client),
+            (93, "创建桌面快捷方式…",   ws.create_desktop_shortcut),
+            (97, "验证安装…",           self._verify),
         ]
 
         # Pre-flight

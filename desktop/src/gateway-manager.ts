@@ -164,12 +164,19 @@ export class GatewayManager extends EventEmitter {
       "--allow-unconfigured",
     ];
 
+    // Ensure compile cache directory exists for Node 22+ V8 bytecode caching
+    const compileCacheDir = path.join(this.stateDir, "compile-cache");
+    if (!fs.existsSync(compileCacheDir)) {
+      fs.mkdirSync(compileCacheDir, { recursive: true });
+    }
+
     const spawnOpts: any = {
       cwd: path.dirname(entryPath),
       env: {
         ...process.env,
         OPENCLAW_STATE_DIR: this.stateDir,
         NODE_ENV: "production",
+        NODE_COMPILE_CACHE: compileCacheDir,
       },
       stdio: ["ignore", "pipe", "pipe"],
       windowsHide: true,

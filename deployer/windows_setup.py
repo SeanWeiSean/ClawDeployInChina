@@ -454,6 +454,12 @@ class WindowsSetup:
                 def _rollback_node(d=str(self.node_dir)):
                     shutil.rmtree(d, ignore_errors=True)
                 self._register_rollback("删除 Node.js", _rollback_node)
+
+                # Add Windows Defender exclusion for managed node dir —
+                # real-time AV scanning thousands of JS files in node_modules
+                # is the main cause of slow gateway startup on Windows.
+                self._add_defender_exclusion(self.node_dir)
+
                 return True
 
             self.log.error("Node.js installed but verification failed")
@@ -732,6 +738,59 @@ class WindowsSetup:
         except Exception as e:
             self.log.error(f"OpenClaw install failed: {e}")
             return False
+
+    def warmup_compile_cache(self) -> bool:
+        """Warm up Node.js compile cache by briefly starting the gateway.
+
+        Node 22's NODE_COMPILE_CACHE stores V8 compiled bytecode so that
+        subsequent starts skip JS parsing.  We run the gateway for a few
+        seconds during install so the cache is pre-populated and the user's
+        first real launch is fast.
+        """
+        self.log.step("Warming up compile cache for faster startup…")
+
+        node = self.node_dir / "node.exe"
+        entry = self.node_dir / "node_modules" / "openclaw" / "openclaw.mjs"
+        if not entry.exists():
+            entry = self.node_dir / "node_modules" / "openclaw" / "dist" / "index.js"
+        if not node.exists() or not entry.exists():
+            self.log.info("  Node or openclaw entry not found — skipping warmup")
+            return True
+
+        state_dir = Path.home() / ".openclaw"
+        cache_dir = state_dir / "compile-cache"
+        cache_dir.mkdir(parents=True, exist_ok=True)
+
+        env = self._get_env()
+        env["NODE_COMPILE_CACHE"] = str(cache_dir)
+        env["NODE_OPTIONS"] = "--dns-result-order=ipv4first"
+        env["NODE_ENV"] = "production"
+        env["OPENCLAW_STATE_DIR"] = str(state_dir)
+
+        try:
+            # Start gateway, let it initialize (populates compile cache), then stop it
+            proc = subprocess.Popen(
+                [str(node), str(entry), "gateway", "run",
+                 "--port", "18789", "--bind", "loopback",
+                 "--force", "--allow-unconfigured"],
+                env=env, cwd=str(entry.parent),
+                stdout=subprocess.PIPE, stderr=subprocess.PIPE,
+                creationflags=0x08000000,  # CREATE_NO_WINDOW
+            )
+            # Wait enough time for Node to parse and compile all modules
+            time.sleep(8)
+            proc.terminate()
+            try:
+                proc.wait(timeout=5)
+            except subprocess.TimeoutExpired:
+                proc.kill()
+
+            cached = sum(1 for _ in cache_dir.glob("**/*") if _.is_file())
+            self.log.success(f"Compile cache warmed up ({cached} files in {cache_dir})")
+            return True
+        except Exception as e:
+            self.log.warn(f"Compile cache warmup failed (non-fatal): {e}")
+            return True  # non-fatal
 
     def _register_rollback_openclaw(self, npm: str, env: dict):
         """Register rollback action for OpenClaw npm uninstall."""
@@ -1797,6 +1856,27 @@ class WindowsSetup:
                 shutil.copy2(ico, target_ico)
                 return target_ico
         return None
+
+    def _add_defender_exclusion(self, target_dir: Path) -> None:
+        """Best-effort: add Windows Defender exclusion for a directory.
+
+        Real-time AV scanning thousands of JS files in node_modules is the
+        primary cause of multi-minute gateway startup on Windows.
+        Requires elevated privileges — silently skips if not available.
+        """
+        try:
+            r = self._run(
+                ["powershell", "-NoProfile", "-Command",
+                 f'Add-MpPreference -ExclusionPath "{target_dir}"'],
+                capture_output=True, text=True, timeout=15,
+            )
+            if r.returncode == 0:
+                self.log.info(f"  Windows Defender exclusion added for {target_dir}")
+            else:
+                # Expected to fail without admin — silently skip
+                self.log.debug(f"  Defender exclusion skipped (needs admin): {r.stderr.strip()[:200]}")
+        except Exception:
+            pass
 
     def _find_openclaw_cmd(self) -> list[str] | None:
         """Find openclaw executable on Windows.

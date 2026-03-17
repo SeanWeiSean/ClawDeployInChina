@@ -339,6 +339,12 @@ async function startGateway(): Promise<void> {
 
   // Write a temp .cmd script that sets env vars inside the new CMD window.
   // This avoids the problem where exec + start doesn't propagate env vars.
+  // Ensure compile cache directory exists for Node 22+ V8 bytecode caching
+  const compileCacheDir = path.join(stateDir, "compile-cache");
+  if (!fs.existsSync(compileCacheDir)) {
+    fs.mkdirSync(compileCacheDir, { recursive: true });
+  }
+
   const tmpScript = path.join(app.getPath("temp"), "openclaw-gateway.cmd");
   const scriptContent = [
     `@echo off`,
@@ -346,6 +352,7 @@ async function startGateway(): Promise<void> {
     `set OPENCLAW_STATE_DIR=${stateDir}`,
     `set NODE_OPTIONS=--dns-result-order=ipv4first`,
     `set NODE_ENV=production`,
+    `set NODE_COMPILE_CACHE=${compileCacheDir}`,
     `echo [OpenClaw Gateway] config=%OPENCLAW_STATE_DIR%`,
     `echo [OpenClaw Gateway] node=${nodePath}`,
     `echo.`,
