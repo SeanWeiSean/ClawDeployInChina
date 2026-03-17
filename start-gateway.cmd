@@ -14,6 +14,12 @@ REM Kill any leftover gateway
 taskkill /F /IM node.exe /T >nul 2>&1
 timeout /t 3 /nobreak >nul
 
+REM Clean stale gateway lock files (survive force-kill)
+if exist "%LOCALAPPDATA%\Temp\openclaw\gateway.*.lock" (
+    del /Q "%LOCALAPPDATA%\Temp\openclaw\gateway.*.lock" >nul 2>&1
+    echo Cleaned stale gateway lock files
+)
+
 REM Detect openclaw entry (classic vs lib/ layout)
 set ENTRY=%USERPROFILE%\.openclaw-node\node_modules\openclaw\openclaw.mjs
 if not exist "%ENTRY%" set ENTRY=%USERPROFILE%\.openclaw-node\lib\node_modules\openclaw\openclaw.mjs

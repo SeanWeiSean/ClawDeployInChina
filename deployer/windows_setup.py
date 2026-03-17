@@ -1553,6 +1553,28 @@ class WindowsSetup:
             except Exception:
                 self.log.info("  守护进程未运行或已停止")
 
+    @staticmethod
+    def _clean_gateway_lock_files(log=None) -> int:
+        """Remove stale gateway lock files from %LOCALAPPDATA%/Temp/openclaw/.
+
+        OpenClaw stores gateway locks at:
+          <LOCALAPPDATA>/Temp/openclaw/gateway.<hash>.lock
+        These locks persist after a force-kill and block the next gateway start.
+        Returns the number of lock files removed.
+        """
+        import glob
+        lock_dir = Path(os.environ.get("LOCALAPPDATA", "")) / "Temp" / "openclaw"
+        removed = 0
+        for lock_file in glob.glob(str(lock_dir / "gateway.*.lock")):
+            try:
+                Path(lock_file).unlink()
+                removed += 1
+                if log:
+                    log.info(f"  已删除锁文件 {Path(lock_file).name}")
+            except Exception:
+                pass
+        return removed
+
     def _uninstall_stop_gateway(self) -> None:
         """Stop the openclaw gateway."""
         env = self._get_env()
@@ -1565,6 +1587,8 @@ class WindowsSetup:
                 self.log.info("  网关已停止")
             except Exception:
                 self.log.info("  网关未运行或已停止")
+        # Always clean stale lock files (they survive force-kill)
+        self._clean_gateway_lock_files(self.log)
 
     def _uninstall_kill_desktop(self) -> None:
         """Kill desktop client processes."""

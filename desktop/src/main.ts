@@ -307,6 +307,19 @@ async function startGateway(): Promise<void> {
     }
   } catch {}
 
+  // Clean stale gateway lock files (survive force-kill / uninstall-reinstall)
+  try {
+    const lockDir = path.join(process.env.LOCALAPPDATA || "", "Temp", "openclaw");
+    if (fs.existsSync(lockDir)) {
+      for (const f of fs.readdirSync(lockDir)) {
+        if (f.startsWith("gateway.") && f.endsWith(".lock")) {
+          fs.unlinkSync(path.join(lockDir, f));
+          console.log(`Removed stale lock: ${f}`);
+        }
+      }
+    }
+  } catch {}
+
 
   if (!fs.existsSync(nodePath)) {
     console.error(`node.exe not found at ${nodePath}`);

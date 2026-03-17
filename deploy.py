@@ -485,6 +485,11 @@ class DeployerApp(tk.Tk):
             ws._configure_git_https()
         except Exception:
             pass
+        # Clean stale gateway lock files left by previous installs
+        try:
+            ws._clean_gateway_lock_files(log)
+        except Exception:
+            pass
 
         node_ok = False
         for pct, label, fn in steps:
