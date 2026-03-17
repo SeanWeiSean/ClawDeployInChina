@@ -230,19 +230,20 @@ function resolveOpenClawEntry(): string {
     const bundled = path.join(process.resourcesPath, "openclaw", "openclaw.mjs");
     if (fs.existsSync(bundled)) return bundled;
   }
+  const home = process.env.USERPROFILE || "";
+  const appData = process.env.APPDATA || "";
   const candidates = [
-    process.env.USERPROFILE
-      ? path.join(process.env.USERPROFILE, ".openclaw-node", "node_modules", "openclaw", "openclaw.mjs")
-      : "",
-    process.env.USERPROFILE
-      ? path.join(process.env.USERPROFILE, ".openclaw-node", "node_modules", "openclaw", "dist", "index.js")
-      : "",
-    process.env.APPDATA
-      ? path.join(process.env.APPDATA, "npm", "node_modules", "openclaw", "openclaw.mjs")
-      : "",
-    process.env.APPDATA
-      ? path.join(process.env.APPDATA, "npm", "node_modules", "openclaw", "dist", "index.js")
-      : "",
+    // npm prefix = ~/.openclaw-node (classic layout)
+    home ? path.join(home, ".openclaw-node", "node_modules", "openclaw", "openclaw.mjs") : "",
+    // npm prefix = ~/.openclaw-node (npm v10+ lib/ layout)
+    home ? path.join(home, ".openclaw-node", "lib", "node_modules", "openclaw", "openclaw.mjs") : "",
+    // fallback: dist/index.js (classic)
+    home ? path.join(home, ".openclaw-node", "node_modules", "openclaw", "dist", "index.js") : "",
+    // fallback: dist/index.js (lib/ layout)
+    home ? path.join(home, ".openclaw-node", "lib", "node_modules", "openclaw", "dist", "index.js") : "",
+    // npm global default location
+    appData ? path.join(appData, "npm", "node_modules", "openclaw", "openclaw.mjs") : "",
+    appData ? path.join(appData, "npm", "node_modules", "openclaw", "dist", "index.js") : "",
   ];
   for (const p of candidates) {
     if (p && fs.existsSync(p)) return p;
@@ -287,8 +288,15 @@ async function startGateway(): Promise<void> {
 
   // Stop any leftover gateway (from previous session / deployer)
   try {
-    const ocCmd = path.join(path.dirname(entryPath), "..", "..", "openclaw.cmd");
-    if (fs.existsSync(ocCmd)) {
+    // Search for openclaw.cmd in multiple locations
+    const home = process.env.USERPROFILE || "";
+    const ocCmdCandidates = [
+      home ? path.join(home, ".openclaw-node", "openclaw.cmd") : "",
+      path.join(path.dirname(entryPath), "..", "..", "openclaw.cmd"),
+      home ? path.join(home, ".openclaw-node", "lib", "..", "openclaw.cmd") : "",
+    ];
+    const ocCmd = ocCmdCandidates.find(p => p && fs.existsSync(p)) || "";
+    if (ocCmd) {
       spawn("cmd.exe", ["/C", `"${ocCmd}" gateway stop`], {
         cwd: path.dirname(entryPath),
         env: { ...process.env, OPENCLAW_STATE_DIR: stateDir },
@@ -439,7 +447,10 @@ function registerIpcHandlers(): void {
   // --- Skills ---
   ipcMain.handle("skills:list", () => {
     const homeDir = app.getPath("home");
-    const builtinDir = path.join(homeDir, ".openclaw-node", "node_modules", "openclaw", "skills");
+    // Check both classic and lib/ npm global layouts for builtin skills
+    const classicDir = path.join(homeDir, ".openclaw-node", "node_modules", "openclaw", "skills");
+    const libDir = path.join(homeDir, ".openclaw-node", "lib", "node_modules", "openclaw", "skills");
+    const builtinDir = fs.existsSync(classicDir) ? classicDir : libDir;
     const customDir = path.join(homeDir, ".agents", "skills");
     const managedDir = path.join(homeDir, ".openclaw", "skills");
 

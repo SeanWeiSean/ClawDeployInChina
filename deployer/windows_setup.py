@@ -66,7 +66,8 @@ class WindowsSetup:
         self.cfg = config
         self.log = logger
         self.node_version = config.get("node.version", "22")
-        self.node_dir = DEFAULT_NODE_DIR
+        # Re-read env var at construction time (UI may have set it)
+        self.node_dir = Path(os.environ.get("OPENCLAW_NODE_DIR", str(DEFAULT_NODE_DIR)))
         self._node_bin: Path | None = None
         self._git_bin: str | None = None  # path to git bin directory
         self._rollback_actions: list[tuple[str, Callable]] = []
@@ -1037,7 +1038,7 @@ class WindowsSetup:
         if getattr(_sys, 'frozen', False) and hasattr(_sys, '_MEIPASS'):
             script = Path(_sys._MEIPASS) / "scripts" / "generate-skill-snapshot.js"
         else:
-            script = Path.cwd() / "scripts" / "generate-skill-snapshot.js"
+            script = Path(__file__).resolve().parent.parent / "scripts" / "generate-skill-snapshot.js"
 
         if not script.exists():
             self.log.warn(f"Snapshot script not found at {script} — skipping")
@@ -1280,7 +1281,7 @@ class WindowsSetup:
     # ────────────────────── Desktop Client ──────────────────────
 
     def _find_local_desktop_zip(self) -> Path | None:
-        """Look for a bundled desktop zip in _MEIPASS, next to exe, or CWD."""
+        """Look for a bundled desktop zip in _MEIPASS, next to exe, or project root."""
         import sys
         candidates = []
         # Bundled inside PyInstaller exe (_MEIPASS)
@@ -1289,9 +1290,10 @@ class WindowsSetup:
         # Next to the exe (distribution scenario)
         if getattr(sys, 'frozen', False):
             candidates.append(Path(sys.executable).parent / "microclaw-portable.zip")
-        # CWD (development scenario)
-        candidates.append(Path.cwd() / "microclaw-portable.zip")
-        candidates.append(Path.cwd() / "dist" / "microclaw-portable.zip")
+        # Project root (development scenario)
+        project_root = Path(__file__).resolve().parent.parent
+        candidates.append(project_root / "microclaw-portable.zip")
+        candidates.append(project_root / "dist" / "microclaw-portable.zip")
         for p in candidates:
             if p.exists():
                 return p

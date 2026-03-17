@@ -45,20 +45,16 @@ export class GatewayManager extends EventEmitter {
       const bundled = path.join(process.resourcesPath, "openclaw", "openclaw.mjs");
       if (fs.existsSync(bundled)) return bundled;
     }
-    // 2. Deployer-installed or npm global — prefer openclaw.mjs (CLI entry) over dist/index.js
+    // 2. Deployer-installed or npm global — check classic and lib/ layouts
+    const home = process.env.USERPROFILE || "";
+    const appData = process.env.APPDATA || "";
     const candidates = [
-      process.env.USERPROFILE
-        ? path.join(process.env.USERPROFILE, ".openclaw-node", "node_modules", "openclaw", "openclaw.mjs")
-        : "",
-      process.env.USERPROFILE
-        ? path.join(process.env.USERPROFILE, ".openclaw-node", "node_modules", "openclaw", "dist", "index.js")
-        : "",
-      process.env.APPDATA
-        ? path.join(process.env.APPDATA, "npm", "node_modules", "openclaw", "openclaw.mjs")
-        : "",
-      process.env.APPDATA
-        ? path.join(process.env.APPDATA, "npm", "node_modules", "openclaw", "dist", "index.js")
-        : "",
+      home ? path.join(home, ".openclaw-node", "node_modules", "openclaw", "openclaw.mjs") : "",
+      home ? path.join(home, ".openclaw-node", "lib", "node_modules", "openclaw", "openclaw.mjs") : "",
+      home ? path.join(home, ".openclaw-node", "node_modules", "openclaw", "dist", "index.js") : "",
+      home ? path.join(home, ".openclaw-node", "lib", "node_modules", "openclaw", "dist", "index.js") : "",
+      appData ? path.join(appData, "npm", "node_modules", "openclaw", "openclaw.mjs") : "",
+      appData ? path.join(appData, "npm", "node_modules", "openclaw", "dist", "index.js") : "",
     ];
     for (const p of candidates) {
       if (p && fs.existsSync(p)) return p;
