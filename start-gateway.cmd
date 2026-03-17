@@ -2,6 +2,8 @@
 title OpenClaw Gateway
 set OPENCLAW_STATE_DIR=%USERPROFILE%\.openclaw
 set NODE_OPTIONS=--dns-result-order=ipv4first
+set NODE_COMPILE_CACHE=%OPENCLAW_STATE_DIR%\compile-cache
+if not exist "%NODE_COMPILE_CACHE%" mkdir "%NODE_COMPILE_CACHE%"
 
 echo ============================================
 echo   OpenClaw Gateway Launcher
