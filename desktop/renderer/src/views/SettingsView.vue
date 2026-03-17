@@ -593,8 +593,7 @@ async function toggleSkill(skillId: string, enabled: boolean) {
 
   try {
     await window.openclaw.skills.updateAllowlist(allowBundled);
-    await window.openclaw.gateway.restart();
-    ElMessage.success("技能配置已更新，网关正在重启…");
+    ElMessage.success("技能配置已更新");
   } catch (err: any) {
     if (skill) skill.enabled = !enabled;
     ElMessage.error("技能配置更新失败: " + (err.message || err));
@@ -607,8 +606,7 @@ async function toggleManagedSkill(skillId: string, enabled: boolean) {
 
   try {
     await window.openclaw.skills.updateManagedEntries({ [skillId]: { enabled } });
-    await window.openclaw.gateway.restart();
-    ElMessage.success("托管技能配置已更新，网关正在重启…");
+    ElMessage.success("托管技能配置已更新");
   } catch (err: any) {
     if (skill) skill.enabled = !enabled;
     ElMessage.error("托管技能配置更新失败: " + (err.message || err));
@@ -845,12 +843,7 @@ async function persistAndRestart(successMsg: string) {
     ElMessage.error("配置保存失败: " + (err.message || err));
     return;
   }
-  try {
-    await window.openclaw.gateway.restart();
-    ElMessage.success(successMsg + "，网关正在重启…");
-  } catch (err: any) {
-    ElMessage.warning("配置已保存，但网关重启失败: " + (err.message || err));
-  }
+  ElMessage.success(successMsg);
 }
 
 async function selectModel(id: string) {
@@ -978,8 +971,7 @@ async function saveBraveApiKey() {
       delete config.tools.web.search;
     }
     await window.openclaw.config.write(config);
-    await window.openclaw.gateway.restart();
-    ElMessage.success(key ? "Brave API Key 已保存，网关正在重启…" : "Brave API Key 已清除");
+    ElMessage.success(key ? "Brave API Key 已保存" : "Brave API Key 已清除");
   } catch (err: any) {
     ElMessage.error("保存失败: " + (err.message || err));
   } finally {
