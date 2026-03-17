@@ -65,6 +65,8 @@ let gatewayPort = 0;
 let gatewayToken = "";
 let gatewayStatus = "stopped";
 let pendingIntegrityResult: IntegrityResult | null = null;
+let healthCheckInterval: ReturnType<typeof setInterval> | null = null;
+let gatewayRestarting = false;
 
 // ---------------------------------------------------------------------------
 // Skill file watcher — detects mid-session tampering
@@ -262,50 +264,126 @@ async function waitForGatewayReady(port: number, timeoutMs = 30000): Promise<boo
   return false;
 }
 
-/** Stop the gateway CMD process */
+/** Kill the gateway by finding the process listening on gatewayPort */
 function stopGatewayProcess(): void {
-  if (gatewayProcess && gatewayProcess.pid) {
-    try {
-      spawn("taskkill", ["/pid", String(gatewayProcess.pid), "/T", "/F"], {
-        windowsHide: true,
-      });
-    } catch {}
-    gatewayProcess = null;
+  gatewayProcess = null;
+  if (!gatewayPort) return;
+  try {
+    // Find PID listening on the gateway port and kill it
+    const result = require("child_process").execSync(
+      `netstat -ano | findstr "LISTENING" | findstr ":${gatewayPort} "`,
+      { windowsHide: true, encoding: "utf-8", timeout: 5000 }
+    );
+    const pids = new Set<string>();
+    for (const line of result.split("\n")) {
+      const m = line.trim().match(/(\d+)\s*$/);
+      if (m) pids.add(m[1]);
+    }
+    for (const pid of pids) {
+      if (pid === "0") continue;
+      console.log(`[gateway] killing process ${pid} on port ${gatewayPort}`);
+      try {
+        spawn("taskkill", ["/pid", pid, "/T", "/F"], { windowsHide: true });
+      } catch {}
+    }
+  } catch {
+    // netstat may return empty if nothing is listening — that's fine
   }
 }
 
+// ---------------------------------------------------------------------------
+// Health monitor — auto-restart gateway if it goes down
+// ---------------------------------------------------------------------------
+function startHealthMonitor(): void {
+  if (healthCheckInterval) clearInterval(healthCheckInterval);
+  healthCheckInterval = setInterval(async () => {
+    // Skip during startup / intentional restart
+    if (gatewayStatus === "stopped" || gatewayStatus === "starting" || gatewayRestarting) return;
+    if (!gatewayPort) return;
+
+    const alive = await checkExistingGateway(gatewayPort);
+    // Only auto-restart if gateway was confirmed running then went down.
+    // Don't restart on "timeout" — the WS client is already retrying.
+    if (!alive && gatewayStatus === "running") {
+      console.log("[health-monitor] Gateway went down — auto-restarting...");
+      gatewayRestarting = true;
+      try {
+        await startGateway();
+      } finally {
+        gatewayRestarting = false;
+      }
+    }
+  }, 10_000); // check every 10 seconds
+}
+
+/** Check gateway health & reconnect if needed (called on window-show / focus) */
+async function ensureGatewayConnected(): Promise<void> {
+  if (gatewayRestarting || gatewayStatus === "starting") return;
+  if (!gatewayPort) return;
+
+  const alive = await checkExistingGateway(gatewayPort);
+  if (alive) {
+    // Gateway is up — if WS is not connected, reconnect
+    if (!gwClient?.connected) {
+      if (gatewayStatus !== "running") {
+        gatewayStatus = "running";
+        mainWindow?.webContents.send("gateway:status", "running");
+      }
+      connectGatewayWs();
+    }
+  } else {
+    // Gateway is down — restart it
+    console.log("[ensure-gateway] Gateway not reachable — restarting...");
+    gatewayRestarting = true;
+    try {
+      await startGateway();
+    } finally {
+      gatewayRestarting = false;
+    }
+  }
+}
+
+let gatewayStartInProgress = false;
+
 async function startGateway(): Promise<void> {
+  // Prevent concurrent calls — only one startGateway at a time
+  if (gatewayStartInProgress) {
+    console.log("[gateway] startGateway() already in progress, skipping");
+    return;
+  }
+  gatewayStartInProgress = true;
+  try {
+    await startGatewayInner();
+  } finally {
+    gatewayStartInProgress = false;
+  }
+}
+
+async function startGatewayInner(): Promise<void> {
   // Read config to get token and configured port
   const config = readConfig();
   gatewayToken = config?.gateway?.auth?.token || "";
   const configuredPort = config?.gateway?.port || 18789;
-
-  // Desktop is the sole gateway controller — kill any stale gateway first
   gatewayPort = configuredPort;
+
+  // If gateway is already healthy, just connect WS and return — no new terminal
+  const alreadyRunning = await checkExistingGateway(configuredPort);
+  if (alreadyRunning) {
+    console.log(`[gateway] Already healthy on port ${configuredPort} — skipping spawn`);
+    gatewayStatus = "running";
+    mainWindow?.webContents.send("gateway:status", "running");
+    connectGatewayWs();
+    startHealthMonitor();
+    return;
+  }
+
   const stateDir = getOpenClawStateDir();
   const nodePath = resolveNodePath();
   const entryPath = resolveOpenClawEntry();
 
-  // Stop any leftover gateway (from previous session / deployer)
-  try {
-    // Search for openclaw.cmd in multiple locations
-    const home = process.env.USERPROFILE || "";
-    const ocCmdCandidates = [
-      home ? path.join(home, ".openclaw-node", "openclaw.cmd") : "",
-      path.join(path.dirname(entryPath), "..", "..", "openclaw.cmd"),
-      home ? path.join(home, ".openclaw-node", "lib", "..", "openclaw.cmd") : "",
-    ];
-    const ocCmd = ocCmdCandidates.find(p => p && fs.existsSync(p)) || "";
-    if (ocCmd) {
-      spawn("cmd.exe", ["/C", `"${ocCmd}" gateway stop`], {
-        cwd: path.dirname(entryPath),
-        env: { ...process.env, OPENCLAW_STATE_DIR: stateDir },
-        windowsHide: true,
-        stdio: "ignore",
-      });
-      await new Promise((r) => setTimeout(r, 2000));
-    }
-  } catch {}
+  // Kill any old gateway on this port
+  stopGatewayProcess();
+  await new Promise((r) => setTimeout(r, 1000));
 
   // Clean stale gateway lock files (survive force-kill / uninstall-reinstall)
   try {
@@ -355,11 +433,13 @@ async function startGateway(): Promise<void> {
     `set NODE_COMPILE_CACHE=${compileCacheDir}`,
     `echo [OpenClaw Gateway] config=%OPENCLAW_STATE_DIR%`,
     `echo [OpenClaw Gateway] node=${nodePath}`,
-    `echo.`,
     `"${nodePath}" "${entryPath}" gateway run --port ${configuredPort} --bind loopback --force --allow-unconfigured`,
     `echo.`,
     `echo [OpenClaw Gateway] exited with code %ERRORLEVEL%`,
-    `pause`,
+    `if %ERRORLEVEL% neq 0 (`,
+    `  echo Press any key to close...`,
+    `  pause >nul`,
+    `)`,
   ].join("\r\n");
   fs.writeFileSync(tmpScript, scriptContent, "utf-8");
 
@@ -386,12 +466,19 @@ async function startGateway(): Promise<void> {
   if (ready) {
     gatewayStatus = "running";
     mainWindow?.webContents.send("gateway:status", "running");
-    connectGatewayWs();
   } else {
     gatewayStatus = "timeout";
     mainWindow?.webContents.send("gateway:status", "timeout");
   }
+  // Always connect WS — even on timeout the gateway may start shortly after,
+  // and GatewayClient has built-in reconnect with exponential backoff.
+  connectGatewayWs();
+
+  // Start health monitoring to auto-restart if the gateway goes down
+  startHealthMonitor();
 }
+
+// (end of startGatewayInner)
 
 // ---------------------------------------------------------------------------
 // WebSocket gateway client — mirrors the webchat protocol
@@ -418,6 +505,11 @@ function connectGatewayWs(): void {
     token: gatewayToken,
     onConnected: (hello) => {
       console.log("[gateway-ws] connected");
+      // Sync the status indicator — fixes "timeout" showing while WS is actually connected
+      if (gatewayStatus !== "running") {
+        gatewayStatus = "running";
+        mainWindow?.webContents.send("gateway:status", "running");
+      }
       // Extract the canonical session key from hello → snapshot → sessionDefaults
       const snapshot = hello?.snapshot as Record<string, unknown> | undefined;
       const sessionDefaults = snapshot?.sessionDefaults as Record<string, unknown> | undefined;
@@ -449,6 +541,7 @@ function registerIpcHandlers(): void {
   ipcMain.handle("gateway:get-token", () => gatewayToken);
   ipcMain.handle("gateway:get-status", () => gatewayStatus);
   ipcMain.handle("gateway:restart", async () => {
+    gwClient?.stop();
     stopGatewayProcess();
     await new Promise((r) => setTimeout(r, 1000));
     await startGateway();
@@ -819,6 +912,10 @@ if (!gotLock) {
       mainWindow.show();
       mainWindow.focus();
     }
+    // Ensure gateway is alive when user re-opens the app
+    ensureGatewayConnected().catch((err) =>
+      console.error("[second-instance] gateway reconnect failed:", err)
+    );
   });
 }
 
@@ -836,6 +933,10 @@ app.whenReady().then(async () => {
         mainWindow.show();
         mainWindow.focus();
       }
+      // Ensure gateway is alive when user shows window from tray
+      ensureGatewayConnected().catch((err) =>
+        console.error("[tray-show] gateway reconnect failed:", err)
+      );
     },
     onRestartGateway: () => { stopGatewayProcess(); startGateway(); },
   };
@@ -895,6 +996,7 @@ app.on("window-all-closed", () => {
 
 app.on("before-quit", () => {
   (app as any).isQuitting = true;
+  if (healthCheckInterval) clearInterval(healthCheckInterval);
   gwClient?.stop();
   stopGatewayProcess();
 });
@@ -903,4 +1005,7 @@ app.on("activate", () => {
   if (mainWindow && !mainWindow.isDestroyed()) {
     mainWindow.show();
   }
+  ensureGatewayConnected().catch((err) =>
+    console.error("[activate] gateway reconnect failed:", err)
+  );
 });
