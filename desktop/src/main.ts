@@ -2,7 +2,7 @@ import { app, BrowserWindow, ipcMain, Menu } from "electron";
 import * as path from "path";
 import * as fs from "fs";
 import * as http from "http";
-import { ChildProcess, spawn } from "child_process";
+import { ChildProcess, spawn, exec } from "child_process";
 import { GatewayClient, type ChatEventPayload } from "./gateway-client";
 import { createTray, updateTrayMenu } from "./tray";
 import Store from "electron-store";
@@ -212,10 +212,15 @@ function resolveNodePath(): string {
     const bundled = path.join(process.resourcesPath, "node.exe");
     if (fs.existsSync(bundled)) return bundled;
   }
-  const ocNode = process.env.USERPROFILE
-    ? path.join(process.env.USERPROFILE, ".openclaw-node", "node.exe")
-    : "";
-  if (ocNode && fs.existsSync(ocNode)) return ocNode;
+  const candidates = [
+    process.env.USERPROFILE
+      ? path.join(process.env.USERPROFILE, ".openclaw-node", "node.exe")
+      : "",
+    "C:\\Program Files\\nodejs\\node.exe",
+  ];
+  for (const p of candidates) {
+    if (p && fs.existsSync(p)) return p;
+  }
   return "node";
 }
 
@@ -274,28 +279,26 @@ async function startGateway(): Promise<void> {
   gatewayToken = config?.gateway?.auth?.token || "";
   const configuredPort = config?.gateway?.port || 18789;
 
-  // Check if a gateway is already running (e.g. started by deployer)
-  // Retry a few times since gateway may still be starting up
-  for (let attempt = 0; attempt < 5; attempt++) {
-    const existing = await checkExistingGateway(configuredPort);
-    if (existing) {
-      gatewayPort = configuredPort;
-      gatewayStatus = "running";
-      mainWindow?.webContents.send("gateway:status", "running");
-      console.log(`Connected to existing gateway on port ${configuredPort}`);
-      connectGatewayWs();
-      return;
-    }
-    if (attempt < 4) {
-      await new Promise((r) => setTimeout(r, 3000));
-    }
-  }
-
-  // No existing gateway — launch in a visible CMD window
+  // Desktop is the sole gateway controller — kill any stale gateway first
   gatewayPort = configuredPort;
   const stateDir = getOpenClawStateDir();
   const nodePath = resolveNodePath();
   const entryPath = resolveOpenClawEntry();
+
+  // Stop any leftover gateway (from previous session / deployer)
+  try {
+    const ocCmd = path.join(path.dirname(entryPath), "..", "..", "openclaw.cmd");
+    if (fs.existsSync(ocCmd)) {
+      spawn("cmd.exe", ["/C", `"${ocCmd}" gateway stop`], {
+        cwd: path.dirname(entryPath),
+        env: { ...process.env, OPENCLAW_STATE_DIR: stateDir },
+        windowsHide: true,
+        stdio: "ignore",
+      });
+      await new Promise((r) => setTimeout(r, 2000));
+    }
+  } catch {}
+
 
   if (!fs.existsSync(nodePath)) {
     console.error(`node.exe not found at ${nodePath}`);
@@ -310,19 +313,35 @@ async function startGateway(): Promise<void> {
     return;
   }
 
-  const cmdLine = `"${nodePath}" "${entryPath}" gateway run --port ${configuredPort} --bind loopback --force --allow-unconfigured`;
-  console.log(`Launching gateway CMD: ${cmdLine}`);
+  console.log(`Launching gateway: stateDir=${stateDir} token=${gatewayToken ? gatewayToken.slice(0, 8) + "..." : "(empty)"}`);
+  console.log(`Launching gateway: node=${nodePath} entry=${entryPath} port=${configuredPort}`);
 
-  gatewayProcess = spawn("cmd.exe", ["/K", `title OpenClaw Gateway && ${cmdLine}`], {
+  // Write a temp .cmd script that sets env vars inside the new CMD window.
+  // This avoids the problem where exec + start doesn't propagate env vars.
+  const tmpScript = path.join(app.getPath("temp"), "openclaw-gateway.cmd");
+  const scriptContent = [
+    `@echo off`,
+    `title OpenClaw Gateway`,
+    `set OPENCLAW_STATE_DIR=${stateDir}`,
+    `set NODE_OPTIONS=--dns-result-order=ipv4first`,
+    `set NODE_ENV=production`,
+    `echo [OpenClaw Gateway] config=%OPENCLAW_STATE_DIR%`,
+    `echo [OpenClaw Gateway] node=${nodePath}`,
+    `echo.`,
+    `"${nodePath}" "${entryPath}" gateway run --port ${configuredPort} --bind loopback --force --allow-unconfigured`,
+    `echo.`,
+    `echo [OpenClaw Gateway] exited with code %ERRORLEVEL%`,
+    `pause`,
+  ].join("\r\n");
+  fs.writeFileSync(tmpScript, scriptContent, "utf-8");
+
+  const startCmd = `start "OpenClaw Gateway" "${tmpScript}"`;
+  const child = exec(startCmd, {
     cwd: path.dirname(entryPath),
-    env: {
-      ...process.env,
-      OPENCLAW_STATE_DIR: stateDir,
-      NODE_ENV: "production",
-    },
-    detached: true,
-    stdio: "ignore",
+    windowsHide: false,
   });
+  // exec returns ChildProcess; keep reference for cleanup
+  gatewayProcess = child as unknown as ChildProcess;
 
   gatewayProcess.on("error", (err) => {
     console.error("Gateway CMD spawn error:", err);
