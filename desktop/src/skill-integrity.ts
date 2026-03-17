@@ -97,16 +97,14 @@ function getStateDir(): string {
 
 export function getSkillSourceDirs(): Array<{ source: string; baseDir: string }> {
   const homeDir = app.getPath("home");
+  // Check both classic and lib/ npm global layouts
+  const classicSkills = path.join(homeDir, ".openclaw-node", "node_modules", "openclaw", "skills");
+  const libSkills = path.join(homeDir, ".openclaw-node", "lib", "node_modules", "openclaw", "skills");
+  const builtinDir = fs.existsSync(classicSkills) ? classicSkills : libSkills;
   return [
     {
       source: "builtin",
-      baseDir: path.join(
-        homeDir,
-        ".openclaw-node",
-        "node_modules",
-        "openclaw",
-        "skills",
-      ),
+      baseDir: builtinDir,
     },
     {
       source: "managed",

@@ -15,14 +15,14 @@ def _get_app_dir() -> Path:
     """Return the directory where the exe (or script) lives."""
     if getattr(sys, 'frozen', False):
         return Path(sys.executable).parent
-    return Path.cwd()
+    return Path(__file__).resolve().parent.parent
 
 
 def _get_bundled_dir() -> Path:
     """Return the directory with bundled resources (_MEIPASS or CWD)."""
     if getattr(sys, 'frozen', False):
         return Path(sys._MEIPASS)
-    return Path.cwd()
+    return Path(__file__).resolve().parent.parent
 
 # We bundle a tiny YAML-like serialiser so the user doesn't need pyyaml.
 # For real YAML we fall back to pyyaml if available.
@@ -88,7 +88,7 @@ DEFAULT_CONFIG: dict[str, Any] = {
         "allowManaged": [],
     },
     "logging": {
-        "log_dir": "./logs",
+        "log_dir": str(_get_app_dir() / "logs"),
         "verbose": True,
     },
 }

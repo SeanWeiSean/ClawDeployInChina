@@ -66,7 +66,8 @@ class WindowsSetup:
         self.cfg = config
         self.log = logger
         self.node_version = config.get("node.version", "22")
-        self.node_dir = DEFAULT_NODE_DIR
+        # Re-read env var at construction time (UI may have set it)
+        self.node_dir = Path(os.environ.get("OPENCLAW_NODE_DIR", str(DEFAULT_NODE_DIR)))
         self._node_bin: Path | None = None
         self._git_bin: str | None = None  # path to git bin directory
         self._rollback_actions: list[tuple[str, Callable]] = []
@@ -1096,7 +1097,7 @@ class WindowsSetup:
         if getattr(_sys, 'frozen', False) and hasattr(_sys, '_MEIPASS'):
             script = Path(_sys._MEIPASS) / "scripts" / "generate-skill-snapshot.js"
         else:
-            script = Path.cwd() / "scripts" / "generate-skill-snapshot.js"
+            script = Path(__file__).resolve().parent.parent / "scripts" / "generate-skill-snapshot.js"
 
         if not script.exists():
             self.log.warn(f"Snapshot script not found at {script} — skipping")
@@ -1339,7 +1340,7 @@ class WindowsSetup:
     # ────────────────────── Desktop Client ──────────────────────
 
     def _find_local_desktop_zip(self) -> Path | None:
-        """Look for a bundled desktop zip in _MEIPASS, next to exe, or CWD."""
+        """Look for a bundled desktop zip in _MEIPASS, next to exe, or project root."""
         import sys
         candidates = []
         # Bundled inside PyInstaller exe (_MEIPASS)
@@ -1348,9 +1349,10 @@ class WindowsSetup:
         # Next to the exe (distribution scenario)
         if getattr(sys, 'frozen', False):
             candidates.append(Path(sys.executable).parent / "microclaw-portable.zip")
-        # CWD (development scenario)
-        candidates.append(Path.cwd() / "microclaw-portable.zip")
-        candidates.append(Path.cwd() / "dist" / "microclaw-portable.zip")
+        # Project root (development scenario)
+        project_root = Path(__file__).resolve().parent.parent
+        candidates.append(project_root / "microclaw-portable.zip")
+        candidates.append(project_root / "dist" / "microclaw-portable.zip")
         for p in candidates:
             if p.exists():
                 return p
@@ -1597,133 +1599,207 @@ class WindowsSetup:
 
     # ────────────────────── Uninstall ──────────────────────
 
-    def uninstall(self) -> bool:
-        """Full uninstall: stop services, run openclaw uninstall, clean up."""
+    def _uninstall_stop_daemon(self) -> None:
+        """Stop the openclaw daemon."""
         env = self._get_env()
         cmd = self._find_openclaw_cmd()
-
-        # 1. Stop daemon
         if cmd:
             self.log.step("停止守护进程…")
             try:
                 self._run(cmd + ["daemon", "stop"],
                           capture_output=True, timeout=15, env=env)
+                self.log.info("  守护进程已停止")
+            except Exception:
+                self.log.info("  守护进程未运行或已停止")
+
+    @staticmethod
+    def _clean_gateway_lock_files(log=None) -> int:
+        """Remove stale gateway lock files from %LOCALAPPDATA%/Temp/openclaw/.
+
+        OpenClaw stores gateway locks at:
+          <LOCALAPPDATA>/Temp/openclaw/gateway.<hash>.lock
+        These locks persist after a force-kill and block the next gateway start.
+        Returns the number of lock files removed.
+        """
+        import glob
+        lock_dir = Path(os.environ.get("LOCALAPPDATA", "")) / "Temp" / "openclaw"
+        removed = 0
+        for lock_file in glob.glob(str(lock_dir / "gateway.*.lock")):
+            try:
+                Path(lock_file).unlink()
+                removed += 1
+                if log:
+                    log.info(f"  已删除锁文件 {Path(lock_file).name}")
             except Exception:
                 pass
+        return removed
 
-        # 2. Stop gateway
+    def _uninstall_stop_gateway(self) -> None:
+        """Stop the openclaw gateway."""
+        env = self._get_env()
+        cmd = self._find_openclaw_cmd()
         if cmd:
             self.log.step("停止网关服务…")
             try:
                 self._run(cmd + ["gateway", "stop"],
                           capture_output=True, timeout=15, env=env)
+                self.log.info("  网关已停止")
             except Exception:
-                pass
+                self.log.info("  网关未运行或已停止")
+        # Always clean stale lock files (they survive force-kill)
+        self._clean_gateway_lock_files(self.log)
 
-        # 3. Kill desktop clients (both MicroClaw and official OpenClaw)
+    def _uninstall_kill_desktop(self) -> None:
+        """Kill desktop client processes."""
         self.log.step("关闭桌面客户端…")
         for exe in ("MicroClawDesktop.exe", "OpenClaw.exe"):
             try:
-                self._run(["taskkill", "/F", "/IM", exe],
-                          capture_output=True, timeout=10)
+                r = self._run(["taskkill", "/F", "/IM", exe],
+                              capture_output=True, text=True, timeout=10)
+                if r.returncode == 0:
+                    self.log.info(f"  已终止 {exe}")
+                else:
+                    self.log.info(f"  {exe} 未运行")
             except Exception:
-                pass
+                self.log.info(f"  {exe} 未运行")
         time.sleep(1)
 
-        # 4. openclaw uninstall --all --yes --non-interactive
-        uninstalled = False
-        if cmd:
-            self.log.step("执行 openclaw uninstall…")
+    def _uninstall_openclaw(self) -> None:
+        """Run openclaw uninstall --all."""
+        env = self._get_env()
+        cmd = self._find_openclaw_cmd()
+        if not cmd:
+            self.log.info("  未找到 openclaw 命令，跳过")
+            return
+        self.log.step("执行 openclaw uninstall…")
+        try:
+            r = self._run(
+                cmd + ["uninstall", "--all", "--yes", "--non-interactive"],
+                capture_output=True, text=True, encoding="utf-8",
+                errors="replace", timeout=120, env=env,
+            )
+            if r.returncode == 0:
+                self.log.success("openclaw uninstall 完成")
+                if r.stdout:
+                    for line in r.stdout.strip().splitlines()[-5:]:
+                        self.log.info(f"  {line.strip()}")
+            else:
+                self.log.warn(f"openclaw uninstall 退出码 {r.returncode}")
+                # Try npx fallback
+                self._uninstall_npx_fallback(env)
+        except Exception as e:
+            self.log.warn(f"openclaw uninstall 失败: {e}")
+            self._uninstall_npx_fallback(env)
+
+    def _uninstall_npx_fallback(self, env: dict) -> None:
+        """Fallback uninstall via npx."""
+        self.log.step("使用 npx 执行卸载…")
+        npx = self._find_npx()
+        if npx:
             try:
                 r = self._run(
-                    cmd + ["uninstall", "--all", "--yes", "--non-interactive"],
+                    npx + ["-y", "openclaw", "uninstall", "--all", "--yes", "--non-interactive"],
                     capture_output=True, text=True, encoding="utf-8",
                     errors="replace", timeout=120, env=env,
                 )
-                if r.returncode == 0:
-                    uninstalled = True
-                    self.log.success("openclaw uninstall 完成")
+                self.log.success("npx openclaw uninstall 完成")
             except Exception as e:
-                self.log.warn(f"openclaw uninstall 失败: {e}")
+                self.log.warn(f"npx 卸载失败: {e}")
 
-        # 5. Fallback: npx
-        if not uninstalled:
-            self.log.step("使用 npx 执行卸载…")
-            npx = self._find_npx()
-            if npx:
-                try:
-                    self._run(
-                        npx + ["-y", "openclaw", "uninstall", "--all", "--yes", "--non-interactive"],
-                        capture_output=True, text=True, encoding="utf-8",
-                        errors="replace", timeout=120, env=env,
-                    )
-                    self.log.success("npx openclaw uninstall 完成")
-                except Exception as e:
-                    self.log.warn(f"npx 卸载失败: {e}")
-
-        # 6. npm uninstall -g openclaw
-        self.log.step("卸载 openclaw 命令…")
+    def _uninstall_npm(self) -> None:
+        """npm uninstall -g openclaw."""
+        self.log.step("卸载 openclaw npm 包…")
         npm = self._get_npm_path()
+        env = self._get_env()
         if npm:
             try:
-                self._run(
+                r = self._run(
                     [npm, "uninstall", "-g", "openclaw"],
                     capture_output=True, text=True, encoding="utf-8",
                     errors="replace", timeout=120, env=env,
                 )
-                self.log.success("npm uninstall -g openclaw 完成")
+                if r.returncode == 0:
+                    self.log.success("npm uninstall -g openclaw 完成")
+                else:
+                    self.log.warn(f"npm uninstall 退出码 {r.returncode}")
             except Exception as e:
                 self.log.warn(f"npm uninstall openclaw 失败: {e}")
+        else:
+            self.log.info("  未找到 npm，跳过")
 
-        # 7. Remove .openclaw-node and clean PATH
+    def _uninstall_clean_node(self) -> None:
+        """Remove .openclaw-node directory and clean PATH."""
         self.log.step("清理 Node 环境…")
         node_dir = self.node_dir
         if node_dir.exists():
             self._remove_from_system_path(str(node_dir))
+            self.log.info(f"  从系统 PATH 中移除 {node_dir}")
+            # Log files being deleted
+            try:
+                count = sum(1 for _ in node_dir.rglob("*") if _.is_file())
+                self.log.info(f"  正在删除 {count} 个文件…")
+            except Exception:
+                pass
             shutil.rmtree(node_dir, ignore_errors=True)
             self.log.info(f"  已删除 {node_dir}")
+        else:
+            self.log.info(f"  {node_dir} 不存在，跳过")
 
-        # 8. Remove official OpenClaw desktop app if present
+    def _uninstall_clean_official(self) -> None:
+        """Remove official OpenClaw desktop app if present."""
         official_dir = Path.home() / "AppData" / "Local" / "Programs" / "OpenClaw"
+        if not official_dir.exists():
+            self.log.info("  未发现官方 OpenClaw 客户端")
+            return
+        self.log.step("清理官方 OpenClaw 客户端…")
+        uninstaller = official_dir / "Uninstall OpenClaw.exe"
+        if uninstaller.exists():
+            try:
+                self._run([str(uninstaller), "/S"], capture_output=True, timeout=60)
+                self.log.success("官方 OpenClaw 卸载程序已执行")
+                time.sleep(2)
+            except Exception as e:
+                self.log.warn(f"官方卸载程序执行失败: {e}")
+        runtime_bin = official_dir / "resources" / "runtime" / "bin"
+        if runtime_bin.exists():
+            self._remove_from_system_path(str(runtime_bin))
         if official_dir.exists():
-            self.log.step("清理官方 OpenClaw 客户端…")
-            # Run its uninstaller silently if available
-            uninstaller = official_dir / "Uninstall OpenClaw.exe"
-            if uninstaller.exists():
-                try:
-                    self._run(
-                        [str(uninstaller), "/S"],
-                        capture_output=True, timeout=60,
-                    )
-                    self.log.success("官方 OpenClaw 卸载程序已执行")
-                    time.sleep(2)
-                except Exception as e:
-                    self.log.warn(f"官方卸载程序执行失败: {e}")
-            # Clean up remnants
-            runtime_bin = official_dir / "resources" / "runtime" / "bin"
-            if runtime_bin.exists():
-                self._remove_from_system_path(str(runtime_bin))
-            if official_dir.exists():
-                shutil.rmtree(official_dir, ignore_errors=True)
-                self.log.info(f"  已删除 {official_dir}")
+            shutil.rmtree(official_dir, ignore_errors=True)
+            self.log.info(f"  已删除 {official_dir}")
 
-        # 10. Remove desktop client
+    def _uninstall_clean_desktop(self) -> None:
+        """Remove the MicroClaw desktop client directory."""
         self.log.step("删除桌面客户端…")
         install_dir = DEFAULT_DESKTOP_DIR
         if install_dir.exists():
+            try:
+                count = sum(1 for _ in install_dir.rglob("*") if _.is_file())
+                self.log.info(f"  正在删除 {count} 个文件…")
+            except Exception:
+                pass
             shutil.rmtree(install_dir, ignore_errors=True)
             self.log.info(f"  已删除 {install_dir}")
+        else:
+            self.log.info(f"  {install_dir} 不存在，跳过")
 
-        # 11. Remove ~/.openclaw config directory
+    def _uninstall_clean_config(self) -> None:
+        """Remove ~/.openclaw config directory."""
         self.log.step("清理配置目录…")
         openclaw_config = Path.home() / ".openclaw"
         if openclaw_config.exists():
+            # List key files being removed
+            for f in openclaw_config.iterdir():
+                self.log.info(f"  删除 {f.name}")
             shutil.rmtree(openclaw_config, ignore_errors=True)
             self.log.info(f"  已删除 {openclaw_config}")
+        else:
+            self.log.info("  配置目录不存在，跳过")
 
-        # 12. Remove desktop shortcuts
+    def _uninstall_clean_shortcuts(self) -> None:
+        """Remove desktop shortcuts."""
         self.log.step("删除快捷方式…")
         desktop = self._get_desktop_path()
+        removed = 0
         for name in ("MicroClawDesktop.lnk", "MicroClawDesktop.url",
                       "MicroClaw.lnk", "MicroClaw.url",
                       "OpenClaw.lnk", "OpenClaw.url"):
@@ -1731,7 +1807,22 @@ class WindowsSetup:
             if p.exists():
                 p.unlink(missing_ok=True)
                 self.log.info(f"  已删除 {p.name}")
+                removed += 1
+        if removed == 0:
+            self.log.info("  未发现快捷方式")
 
+    def uninstall(self) -> bool:
+        """Full uninstall: stop services, run openclaw uninstall, clean up."""
+        self._uninstall_stop_daemon()
+        self._uninstall_stop_gateway()
+        self._uninstall_kill_desktop()
+        self._uninstall_openclaw()
+        self._uninstall_npm()
+        self._uninstall_clean_node()
+        self._uninstall_clean_official()
+        self._uninstall_clean_desktop()
+        self._uninstall_clean_config()
+        self._uninstall_clean_shortcuts()
         self.log.success("卸载完成")
         return True
 

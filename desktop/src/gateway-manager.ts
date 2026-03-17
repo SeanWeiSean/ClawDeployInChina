@@ -45,20 +45,16 @@ export class GatewayManager extends EventEmitter {
       const bundled = path.join(process.resourcesPath, "openclaw", "openclaw.mjs");
       if (fs.existsSync(bundled)) return bundled;
     }
-    // 2. Deployer-installed or npm global — prefer openclaw.mjs (CLI entry) over dist/index.js
+    // 2. Deployer-installed or npm global — check classic and lib/ layouts
+    const home = process.env.USERPROFILE || "";
+    const appData = process.env.APPDATA || "";
     const candidates = [
-      process.env.USERPROFILE
-        ? path.join(process.env.USERPROFILE, ".openclaw-node", "node_modules", "openclaw", "openclaw.mjs")
-        : "",
-      process.env.USERPROFILE
-        ? path.join(process.env.USERPROFILE, ".openclaw-node", "node_modules", "openclaw", "dist", "index.js")
-        : "",
-      process.env.APPDATA
-        ? path.join(process.env.APPDATA, "npm", "node_modules", "openclaw", "openclaw.mjs")
-        : "",
-      process.env.APPDATA
-        ? path.join(process.env.APPDATA, "npm", "node_modules", "openclaw", "dist", "index.js")
-        : "",
+      home ? path.join(home, ".openclaw-node", "node_modules", "openclaw", "openclaw.mjs") : "",
+      home ? path.join(home, ".openclaw-node", "lib", "node_modules", "openclaw", "openclaw.mjs") : "",
+      home ? path.join(home, ".openclaw-node", "node_modules", "openclaw", "dist", "index.js") : "",
+      home ? path.join(home, ".openclaw-node", "lib", "node_modules", "openclaw", "dist", "index.js") : "",
+      appData ? path.join(appData, "npm", "node_modules", "openclaw", "openclaw.mjs") : "",
+      appData ? path.join(appData, "npm", "node_modules", "openclaw", "dist", "index.js") : "",
     ];
     for (const p of candidates) {
       if (p && fs.existsSync(p)) return p;
@@ -112,12 +108,27 @@ export class GatewayManager extends EventEmitter {
     return false;
   }
 
+  /** Remove stale gateway lock files from %LOCALAPPDATA%/Temp/openclaw/ */
+  private cleanStaleLockFiles(): void {
+    try {
+      const lockDir = path.join(process.env.LOCALAPPDATA || "", "Temp", "openclaw");
+      if (!fs.existsSync(lockDir)) return;
+      for (const f of fs.readdirSync(lockDir)) {
+        if (f.startsWith("gateway.") && f.endsWith(".lock")) {
+          fs.unlinkSync(path.join(lockDir, f));
+          this.emit("log", `Removed stale lock: ${f}`);
+        }
+      }
+    } catch {}
+  }
+
   /** Start the gateway process */
   async start(): Promise<number> {
     this.stopping = false;
     this.emit("status", "starting");
 
     await this.waitForPortAvailable();
+    this.cleanStaleLockFiles();
 
     const nodePath = this.getNodePath();
     const entryPath = this.getOpenClawEntry();

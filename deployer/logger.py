@@ -17,7 +17,7 @@ from pathlib import Path
 def _get_app_dir() -> Path:
     if getattr(sys, 'frozen', False):
         return Path(sys.executable).parent
-    return Path.cwd()
+    return Path(__file__).resolve().parent.parent
 
 
 class DeployerLogger:
