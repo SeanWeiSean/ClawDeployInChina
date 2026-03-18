@@ -2,7 +2,7 @@ import { app, BrowserWindow, ipcMain, Menu } from "electron";
 import * as path from "path";
 import * as fs from "fs";
 import * as http from "http";
-import { ChildProcess, spawn, exec } from "child_process";
+import { ChildProcess, spawn } from "child_process";
 import { GatewayClient, type ChatEventPayload } from "./gateway-client";
 import { createTray, updateTrayMenu } from "./tray";
 import Store from "electron-store";
@@ -415,47 +415,70 @@ async function startGatewayInner(): Promise<void> {
   console.log(`Launching gateway: stateDir=${stateDir} token=${gatewayToken ? gatewayToken.slice(0, 8) + "..." : "(empty)"}`);
   console.log(`Launching gateway: node=${nodePath} entry=${entryPath} port=${configuredPort}`);
 
-  // Write a temp .cmd script that sets env vars inside the new CMD window.
-  // This avoids the problem where exec + start doesn't propagate env vars.
   // Ensure compile cache directory exists for Node 22+ V8 bytecode caching
   const compileCacheDir = path.join(stateDir, "compile-cache");
   if (!fs.existsSync(compileCacheDir)) {
     fs.mkdirSync(compileCacheDir, { recursive: true });
   }
 
-  const tmpScript = path.join(app.getPath("temp"), "openclaw-gateway.cmd");
-  const scriptContent = [
-    `@echo off`,
-    `title OpenClaw Gateway`,
-    `set OPENCLAW_STATE_DIR=${stateDir}`,
-    `set NODE_OPTIONS=--dns-result-order=ipv4first`,
-    `set NODE_ENV=production`,
-    `set NODE_COMPILE_CACHE=${compileCacheDir}`,
-    `echo [OpenClaw Gateway] config=%OPENCLAW_STATE_DIR%`,
-    `echo [OpenClaw Gateway] node=${nodePath}`,
-    `"${nodePath}" "${entryPath}" gateway run --port ${configuredPort} --bind loopback --force --allow-unconfigured`,
-    `echo.`,
-    `echo [OpenClaw Gateway] exited with code %ERRORLEVEL%`,
-    `if %ERRORLEVEL% neq 0 (`,
-    `  echo Press any key to close...`,
-    `  pause >nul`,
-    `)`,
-  ].join("\r\n");
-  fs.writeFileSync(tmpScript, scriptContent, "utf-8");
+  // Spawn gateway as a hidden background process — logs are forwarded
+  // to the renderer via the gateway:log IPC channel (visible in Settings).
+  const gwArgs = [
+    entryPath,
+    "gateway", "run",
+    "--port", String(configuredPort),
+    "--bind", "loopback",
+    "--force",
+    "--allow-unconfigured",
+  ];
 
-  const startCmd = `start "OpenClaw Gateway" "${tmpScript}"`;
-  const child = exec(startCmd, {
+  const gwEnv = {
+    ...process.env,
+    OPENCLAW_STATE_DIR: stateDir,
+    NODE_OPTIONS: "--dns-result-order=ipv4first",
+    NODE_ENV: "production",
+    NODE_COMPILE_CACHE: compileCacheDir,
+  };
+
+  const CREATE_NO_WINDOW = 0x08000000;
+  const child = spawn(nodePath, gwArgs, {
     cwd: path.dirname(entryPath),
-    windowsHide: false,
+    env: gwEnv,
+    stdio: ["ignore", "pipe", "pipe"],
+    windowsHide: true,
+    ...(process.platform === "win32" ? { creationFlags: CREATE_NO_WINDOW } : {}),
   });
-  // exec returns ChildProcess; keep reference for cleanup
-  gatewayProcess = child as unknown as ChildProcess;
 
-  gatewayProcess.on("error", (err) => {
-    console.error("Gateway CMD spawn error:", err);
+  gatewayProcess = child;
+
+  // Forward stdout/stderr to the renderer's gateway log viewer
+  child.stdout?.on("data", (data: Buffer) => {
+    const msg = data.toString().trim();
+    if (msg) {
+      console.log(`[gateway] ${msg}`);
+      mainWindow?.webContents.send("gateway:log", msg);
+    }
+  });
+  child.stderr?.on("data", (data: Buffer) => {
+    const msg = data.toString().trim();
+    if (msg) {
+      console.log(`[gateway:err] ${msg}`);
+      mainWindow?.webContents.send("gateway:log", msg);
+    }
+  });
+
+  child.on("error", (err) => {
+    console.error("Gateway spawn error:", err);
+    mainWindow?.webContents.send("gateway:log", `[error] ${err.message}`);
     gatewayProcess = null;
     gatewayStatus = "failed";
     mainWindow?.webContents.send("gateway:status", "failed");
+  });
+
+  child.on("exit", (code, signal) => {
+    console.log(`[gateway] exited: code=${code} signal=${signal}`);
+    mainWindow?.webContents.send("gateway:log", `Gateway exited: code=${code} signal=${signal}`);
+    gatewayProcess = null;
   });
 
   // Wait for gateway to become ready

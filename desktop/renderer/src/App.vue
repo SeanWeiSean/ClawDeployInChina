@@ -139,6 +139,9 @@ onMounted(async () => {
   // Gateway process status
   unsubStatus = window.openclaw.gateway.onStatus((status) => {
     gateway.status = status;
+    if (status === "running") {
+      window.openclaw.gateway.getPort().then((p) => (gateway.port = p));
+    }
   });
   unsubLog = window.openclaw.gateway.onLog((msg) => {
     gateway.addLog(msg);

@@ -647,6 +647,7 @@ class DeployerApp(tk.Tk):
             self._complete_icon.config(text="✓", fg=SUCCESS)
             self._complete_title.config(text="卸载完成", fg=FG)
             self._complete_msg.config(text="MicroClaw 已从您的电脑中移除。")
+            self._shortcut_var.set(False)
             self._shortcut_check.pack_forget()
             self._show_page(3)
         self.after(0, _do)
