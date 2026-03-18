@@ -314,6 +314,14 @@ class DeployerApp(tk.Tk):
             font=("Segoe UI", 10), bg=BG, fg=FG_DIM, justify="center")
         self._complete_msg.pack()
 
+        self._shortcut_var = tk.BooleanVar(value=True)
+        self._shortcut_check = tk.Checkbutton(
+            self._complete_inner, text="创建桌面快捷方式",
+            variable=self._shortcut_var,
+            font=("Segoe UI", 10), bg=BG, fg=FG, activebackground=BG,
+            selectcolor=BG, cursor="hand2")
+        self._shortcut_check.pack(pady=(12, 0))
+
         self._pages.append(p3)
 
     # ─────────────────────────────────────────────────────
@@ -357,7 +365,7 @@ class DeployerApp(tk.Tk):
         elif idx == 3:
             self._btn_back.pack_forget()
             self._btn_cancel.pack_forget()
-            self._btn_next.config(text="完成", command=self.destroy, bg=SUCCESS, state="normal")
+            self._btn_next.config(text="完成", command=self._on_finish, bg=SUCCESS, state="normal")
             self._uninstall_btn.pack_forget()
 
     def _on_next(self):
@@ -369,6 +377,19 @@ class DeployerApp(tk.Tk):
             self._show_page(self._current_page - 1)
 
     def _on_cancel(self):
+        self.destroy()
+
+    def _on_finish(self):
+        """Handle '完成' button — create shortcut if checked, then close."""
+        if self._shortcut_var.get():
+            try:
+                install_dir = self._install_dir_var.get().strip()
+                if install_dir:
+                    os.environ["OPENCLAW_NODE_DIR"] = install_dir
+                ws = WindowsSetup(self.config, self.logger)
+                ws.create_desktop_shortcut()
+            except Exception:
+                pass
         self.destroy()
 
     def _on_cancel_install(self):
@@ -473,7 +494,6 @@ class DeployerApp(tk.Tk):
             (65, "配置系统 PATH…",      ws.add_to_path),
             (75, "写入配置文件…",       ws.write_config),
             (85, "安装桌面客户端…",     ws.install_desktop_client),
-            (93, "创建桌面快捷方式…",   ws.create_desktop_shortcut),
             (97, "验证安装…",           self._verify),
         ]
 
@@ -538,7 +558,8 @@ class DeployerApp(tk.Tk):
             self._set_progress(100, "安装完成！")
             self._complete_icon.config(text="✓", fg=SUCCESS)
             self._complete_title.config(text="安装完成！", fg=FG)
-            self._complete_msg.config(text="MicroClaw 已成功安装到您的电脑。\n浏览器即将打开控制台。")
+            self._complete_msg.config(text="MicroClaw 已成功安装到您的电脑。")
+            self._shortcut_check.pack(pady=(12, 0))
             self._show_page(3)
         self.after(0, _do)
 
@@ -548,6 +569,7 @@ class DeployerApp(tk.Tk):
             self._complete_icon.config(text="✗", fg=ERROR)
             self._complete_title.config(text="安装失败", fg=ERROR)
             self._complete_msg.config(text=f"{msg}\n请检查网络连接后重试。")
+            self._shortcut_check.pack_forget()
             self._show_page(3)
             self._btn_next.config(text="重试", command=self._on_retry, bg=ACCENT, state="normal")
             self._btn_cancel.pack(side="left")
@@ -625,6 +647,7 @@ class DeployerApp(tk.Tk):
             self._complete_icon.config(text="✓", fg=SUCCESS)
             self._complete_title.config(text="卸载完成", fg=FG)
             self._complete_msg.config(text="MicroClaw 已从您的电脑中移除。")
+            self._shortcut_check.pack_forget()
             self._show_page(3)
         self.after(0, _do)
 
