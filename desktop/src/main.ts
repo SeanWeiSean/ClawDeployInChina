@@ -400,13 +400,19 @@ async function startGatewayInner(): Promise<void> {
 
 
   if (!fs.existsSync(nodePath)) {
-    console.error(`node.exe not found at ${nodePath}`);
+    const msg = `[error] node.exe not found at ${nodePath}`;
+    console.error(msg);
+    mainWindow?.webContents.send("gateway:log", msg);
+    mainWindow?.webContents.send("gateway:log", "[hint] 请确认安装程序已完成，或手动检查 .openclaw-node 目录");
     gatewayStatus = "failed";
     mainWindow?.webContents.send("gateway:status", "failed");
     return;
   }
   if (!fs.existsSync(entryPath)) {
-    console.error(`openclaw entry not found at ${entryPath}`);
+    const msg = `[error] openclaw entry not found at ${entryPath}`;
+    console.error(msg);
+    mainWindow?.webContents.send("gateway:log", msg);
+    mainWindow?.webContents.send("gateway:log", "[hint] 请确认 openclaw 已正确安装到 .openclaw-node");
     gatewayStatus = "failed";
     mainWindow?.webContents.send("gateway:status", "failed");
     return;
@@ -469,7 +475,8 @@ async function startGatewayInner(): Promise<void> {
 
   child.on("error", (err) => {
     console.error("Gateway spawn error:", err);
-    mainWindow?.webContents.send("gateway:log", `[error] ${err.message}`);
+    mainWindow?.webContents.send("gateway:log", `[error] Gateway spawn failed: ${err.message}`);
+    mainWindow?.webContents.send("gateway:log", `[info] node=${nodePath} entry=${entryPath}`);
     gatewayProcess = null;
     gatewayStatus = "failed";
     mainWindow?.webContents.send("gateway:status", "failed");
@@ -490,6 +497,8 @@ async function startGatewayInner(): Promise<void> {
     gatewayStatus = "running";
     mainWindow?.webContents.send("gateway:status", "running");
   } else {
+    mainWindow?.webContents.send("gateway:log", `[warn] Gateway health check timed out on port ${configuredPort}`);
+    mainWindow?.webContents.send("gateway:log", `[info] node=${nodePath} entry=${entryPath} stateDir=${stateDir}`);
     gatewayStatus = "timeout";
     mainWindow?.webContents.send("gateway:status", "timeout");
   }
@@ -564,10 +573,19 @@ function registerIpcHandlers(): void {
   ipcMain.handle("gateway:get-token", () => gatewayToken);
   ipcMain.handle("gateway:get-status", () => gatewayStatus);
   ipcMain.handle("gateway:restart", async () => {
+    mainWindow?.webContents.send("gateway:log", "[restart] 正在重启网关…");
     gwClient?.stop();
     stopGatewayProcess();
     await new Promise((r) => setTimeout(r, 1000));
-    await startGateway();
+    try {
+      await startGateway();
+    } catch (err: any) {
+      const msg = `[error] Gateway restart failed: ${err?.message || err}`;
+      console.error(msg);
+      mainWindow?.webContents.send("gateway:log", msg);
+      gatewayStatus = "failed";
+      mainWindow?.webContents.send("gateway:status", "failed");
+    }
   });
 
   // --- Config ---
@@ -801,103 +819,69 @@ function registerIpcHandlers(): void {
     }
   });
 
-  // --- Usage (LiteLLM spend) ---
+  // --- Usage (via gateway WebSocket sessions.usage) ---
   ipcMain.handle("usage:get-stats", async () => {
-    const config = readConfig();
-    if (!config) throw new Error("配置文件未找到");
+    if (!gwClient?.connected) throw new Error("Gateway 未连接");
 
-    // Get LiteLLM proxy base URL from config providers
-    const providers = config?.models?.providers || {};
-    const litellm = providers.litellm || (Object.values(providers)[0] as any);
-    if (!litellm?.baseUrl) throw new Error("模型提供商未配置");
-    let baseUrl: string = litellm.baseUrl;
-    if (baseUrl.endsWith("/v1")) baseUrl = baseUrl.slice(0, -3);
-    baseUrl = baseUrl.replace(/\/$/, "");
+    const endDate = new Date().toISOString().split("T")[0];
+    const startDate = new Date(Date.now() - 30 * 86400000).toISOString().split("T")[0];
 
-    // Get API key from .env file in state dir
-    let apiKey = "";
-    const envPath = path.join(getOpenClawStateDir(), ".env");
-    if (fs.existsSync(envPath)) {
-      const envContent = fs.readFileSync(envPath, "utf-8");
-      const match = envContent.match(/LITELLM_API_KEY=(.+)/);
-      if (match) apiKey = match[1].trim();
-    }
-    if (!apiKey) apiKey = process.env.LITELLM_API_KEY || "";
-    if (!apiKey) throw new Error("API Key 未找到");
-
-    // Query /key/info for spend summary
-    const keyInfoRes = await fetch(`${baseUrl}/key/info`, {
-      headers: { "Authorization": `Bearer ${apiKey}` },
+    // Query the gateway's sessions.usage method (same as OpenClaw web dashboard)
+    const result = await gwClient.request<any>("sessions.usage", {
+      startDate,
+      endDate,
+      limit: 1000,
+      includeContextWeight: true,
     });
-    if (!keyInfoRes.ok) {
-      throw new Error(`LiteLLM API 错误: ${keyInfoRes.status} ${keyInfoRes.statusText}`);
+
+    const totals = result?.totals || {};
+    const aggregates = result?.aggregates || {};
+    const daily = aggregates.daily || [];
+    const byModel = aggregates.byModel || [];
+    const messages = aggregates.messages || {};
+
+    // Build model breakdown
+    const modelBreakdown: Record<string, {
+      requests: number; promptTokens: number; completionTokens: number; spend: number;
+    }> = {};
+    const modelSpend: Record<string, number> = {};
+    for (const m of byModel) {
+      const name = m.model || m.provider || "unknown";
+      const mt = m.totals || {};
+      modelBreakdown[name] = {
+        requests: m.count || 0,
+        promptTokens: mt.input || 0,
+        completionTokens: mt.output || 0,
+        spend: mt.totalCost || 0,
+      };
+      modelSpend[name] = mt.totalCost || 0;
     }
-    const keyInfo = (await keyInfoRes.json()) as any;
-    const info = keyInfo.info || keyInfo;
 
-    // Try to get detailed spend logs (last 30 days)
-    let logs: any[] = [];
-    try {
-      const endDate = new Date().toISOString().split("T")[0];
-      const startDate = new Date(Date.now() - 30 * 86400000).toISOString().split("T")[0];
-      const logsRes = await fetch(
-        `${baseUrl}/spend/logs?start_date=${encodeURIComponent(startDate)}&end_date=${encodeURIComponent(endDate)}&api_key=${encodeURIComponent(apiKey)}`,
-        { headers: { "Authorization": `Bearer ${apiKey}` } }
-      );
-      if (logsRes.ok) {
-        const body = await logsRes.json();
-        logs = Array.isArray(body) ? body : [];
-      }
-    } catch {
-      // Detailed logs may not be available
-    }
-
-    // Aggregate from key info
-    const totalSpend = info.spend || 0;
-    const maxBudget = info.max_budget ?? null;
-    const modelSpend: Record<string, number> = info.model_spend || {};
-    const keyName = info.key_name || info.key_alias || "";
-    const budgetDuration = info.budget_duration || null;
-    const budgetResetAt = info.budget_reset_at || null;
-
-    // Aggregate from detailed logs
-    let totalPromptTokens = 0;
-    let totalCompletionTokens = 0;
-    const totalRequests = logs.length;
+    // Build daily spend
     const dailySpend: Record<string, number> = {};
-    const modelBreakdown: Record<string, { requests: number; promptTokens: number; completionTokens: number; spend: number }> = {};
-
-    for (const entry of logs) {
-      totalPromptTokens += entry.prompt_tokens || 0;
-      totalCompletionTokens += entry.completion_tokens || 0;
-      const model = entry.model || "unknown";
-      if (!modelBreakdown[model]) {
-        modelBreakdown[model] = { requests: 0, promptTokens: 0, completionTokens: 0, spend: 0 };
-      }
-      modelBreakdown[model].requests++;
-      modelBreakdown[model].promptTokens += entry.prompt_tokens || 0;
-      modelBreakdown[model].completionTokens += entry.completion_tokens || 0;
-      modelBreakdown[model].spend += entry.spend || 0;
-      const day = (entry.startTime || entry.created_at || "").slice(0, 10);
-      if (day) {
-        dailySpend[day] = (dailySpend[day] || 0) + (entry.spend || 0);
-      }
+    for (const d of daily) {
+      if (d.date) dailySpend[d.date] = d.cost || 0;
     }
 
     return {
-      totalSpend,
-      maxBudget,
+      totalSpend: totals.totalCost || 0,
+      maxBudget: null,
       modelSpend,
-      keyName,
-      budgetDuration,
-      budgetResetAt,
-      totalPromptTokens,
-      totalCompletionTokens,
-      totalTokens: totalPromptTokens + totalCompletionTokens,
-      totalRequests,
+      keyName: "",
+      budgetDuration: null,
+      budgetResetAt: null,
+      totalPromptTokens: totals.input || 0,
+      totalCompletionTokens: totals.output || 0,
+      totalTokens: totals.totalTokens || 0,
+      totalRequests: messages.total || (result?.sessions?.length || 0),
       modelBreakdown,
       dailySpend,
-      hasDetailedLogs: logs.length > 0,
+      hasDetailedLogs: (result?.sessions?.length || 0) > 0,
+      // Extra fields from gateway
+      cacheReadTokens: totals.cacheRead || 0,
+      cacheWriteTokens: totals.cacheWrite || 0,
+      sessionCount: result?.sessions?.length || 0,
+      toolCalls: aggregates.tools?.totalCalls || 0,
     };
   });
 

@@ -617,10 +617,25 @@ class WindowsSetup:
     # ────────────────────── OpenClaw ──────────────────────
 
     def check_openclaw_windows(self) -> bool:
-        """Check if openclaw is installed on Windows and the binary exists."""
-        # Must have the actual cmd/exe file, not just npm metadata
-        if not self._find_openclaw_cmd():
+        """Check if openclaw is installed **inside our managed node_dir**.
+
+        A system-level openclaw (e.g. via Node v24 in Program Files) does
+        NOT count — the Electron desktop app resolves the entry point from
+        node_dir/node_modules/openclaw/, so the package must live there.
+        """
+        # Primary check: the actual entry file that Electron uses
+        entry = self.node_dir / "node_modules" / "openclaw" / "openclaw.mjs"
+        if not entry.exists():
+            entry = self.node_dir / "node_modules" / "openclaw" / "dist" / "index.js"
+        if not entry.exists():
+            # Also check npm v10+ lib/ layout
+            entry = self.node_dir / "lib" / "node_modules" / "openclaw" / "openclaw.mjs"
+        if not entry.exists():
+            entry = self.node_dir / "lib" / "node_modules" / "openclaw" / "dist" / "index.js"
+        if not entry.exists():
             return False
+
+        # Verify version via npm list (using our managed npm)
         npm = self._get_npm_path()
         if not npm:
             return False
@@ -955,6 +970,9 @@ class WindowsSetup:
                                 "input": ["text", "image"],
                                 "contextWindow": 200000,
                                 "maxTokens": 16384,
+                                "compat": {
+                                    "supportsUsageInStreaming": True,
+                                },
                             }
                         ],
                     }
@@ -1693,67 +1711,78 @@ class WindowsSetup:
         time.sleep(1)
 
     def _uninstall_openclaw(self) -> None:
-        """Run openclaw uninstall --all."""
-        env = self._get_env()
-        cmd = self._find_openclaw_cmd()
-        if not cmd:
-            self.log.info("  未找到 openclaw 命令，跳过")
-            return
-        self.log.step("执行 openclaw uninstall…")
-        try:
-            r = self._run(
-                cmd + ["uninstall", "--all", "--yes", "--non-interactive"],
-                capture_output=True, text=True, encoding="utf-8",
-                errors="replace", timeout=120, env=env,
-            )
-            if r.returncode == 0:
-                self.log.success("openclaw uninstall 完成")
-                if r.stdout:
-                    for line in r.stdout.strip().splitlines()[-5:]:
-                        self.log.info(f"  {line.strip()}")
-            else:
-                self.log.warn(f"openclaw uninstall 退出码 {r.returncode}")
-                # Try npx fallback
-                self._uninstall_npx_fallback(env)
-        except Exception as e:
-            self.log.warn(f"openclaw uninstall 失败: {e}")
-            self._uninstall_npx_fallback(env)
+        """Skip the slow openclaw CLI uninstall.
+
+        The openclaw CLI cold-starts Node.js (20-80s) and then runs
+        uninstall logic that is fully covered by the direct cleanup
+        steps that follow (_uninstall_clean_node, _uninstall_clean_config,
+        etc.).  Skipping this avoids a 120s timeout on slow machines.
+        """
+        self.log.info("  跳过 openclaw CLI 卸载（后续步骤直接清理文件）")
 
     def _uninstall_npx_fallback(self, env: dict) -> None:
-        """Fallback uninstall via npx."""
-        self.log.step("使用 npx 执行卸载…")
-        npx = self._find_npx()
-        if npx:
-            try:
-                r = self._run(
-                    npx + ["-y", "openclaw", "uninstall", "--all", "--yes", "--non-interactive"],
-                    capture_output=True, text=True, encoding="utf-8",
-                    errors="replace", timeout=120, env=env,
-                )
-                self.log.success("npx openclaw uninstall 完成")
-            except Exception as e:
-                self.log.warn(f"npx 卸载失败: {e}")
+        """Fallback uninstall via npx — no longer used (kept for API compat)."""
+        pass
 
     def _uninstall_npm(self) -> None:
-        """npm uninstall -g openclaw."""
-        self.log.step("卸载 openclaw npm 包…")
-        npm = self._get_npm_path()
-        env = self._get_env()
-        if npm:
+        """Uninstall openclaw from system-level npm global (if any).
+
+        The managed .openclaw-node is deleted entirely by _uninstall_clean_node,
+        but a system Node.js (e.g. C:\\Program Files\\nodejs) may also have
+        openclaw installed globally.  Clean that up too.
+        """
+        self.log.step("清理系统全局 openclaw…")
+
+        # 1. Try system npm (not our managed one — that gets rmtree'd later)
+        system_npm = None
+        for candidate in [
+            Path("C:/Program Files/nodejs/npm.cmd"),
+            Path("C:/Program Files (x86)/nodejs/npm.cmd"),
+        ]:
+            if candidate.exists():
+                system_npm = str(candidate)
+                break
+        if not system_npm:
+            # Search PATH but skip our managed dir
+            for p in os.environ.get("PATH", "").split(os.pathsep):
+                npm_cmd = Path(p) / "npm.cmd"
+                if npm_cmd.exists() and str(self.node_dir) not in str(npm_cmd):
+                    system_npm = str(npm_cmd)
+                    break
+
+        if system_npm:
             try:
                 r = self._run(
-                    [npm, "uninstall", "-g", "openclaw"],
+                    [system_npm, "uninstall", "-g", "openclaw"],
                     capture_output=True, text=True, encoding="utf-8",
-                    errors="replace", timeout=120, env=env,
+                    errors="replace", timeout=30,
                 )
                 if r.returncode == 0:
-                    self.log.success("npm uninstall -g openclaw 完成")
+                    self.log.info(f"  已从系统 npm 卸载 openclaw ({system_npm})")
                 else:
-                    self.log.warn(f"npm uninstall 退出码 {r.returncode}")
-            except Exception as e:
-                self.log.warn(f"npm uninstall openclaw 失败: {e}")
+                    self.log.info(f"  系统 npm 无全局 openclaw")
+            except Exception:
+                self.log.info(f"  系统 npm uninstall 跳过")
         else:
-            self.log.info("  未找到 npm，跳过")
+            self.log.info("  未找到系统 npm")
+
+        # 2. Direct cleanup: remove openclaw files from %APPDATA%\npm
+        npm_global = Path(os.environ.get("APPDATA", "")) / "npm"
+        if npm_global.exists():
+            # Remove openclaw shims
+            for name in ("openclaw", "openclaw.cmd", "openclaw.ps1"):
+                p = npm_global / name
+                if p.exists():
+                    try:
+                        p.unlink()
+                        self.log.info(f"  已删除 {p}")
+                    except Exception:
+                        pass
+            # Remove openclaw package dir
+            pkg_dir = npm_global / "node_modules" / "openclaw"
+            if pkg_dir.exists():
+                shutil.rmtree(pkg_dir, ignore_errors=True)
+                self.log.info(f"  已删除 {pkg_dir}")
 
     def _uninstall_clean_node(self) -> None:
         """Remove .openclaw-node directory and clean PATH."""
@@ -1849,13 +1878,13 @@ class WindowsSetup:
             self.log.info("  未发现快捷方式")
 
     def uninstall(self) -> bool:
-        """Full uninstall: stop services, run openclaw uninstall, clean up."""
+        """Full uninstall: stop services, clean up everything."""
         self._uninstall_stop_daemon()
         self._uninstall_stop_gateway()
         self._uninstall_kill_desktop()
         self._uninstall_openclaw()
-        self._uninstall_npm()
-        self._uninstall_clean_node()
+        self._uninstall_npm()           # system-level global cleanup
+        self._uninstall_clean_node()    # delete managed .openclaw-node
         self._uninstall_clean_official()
         self._uninstall_clean_desktop()
         self._uninstall_clean_config()

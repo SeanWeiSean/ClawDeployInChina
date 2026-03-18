@@ -125,7 +125,8 @@ const activeTab = ref("sessions");
 
 function switchTab(tabId: string) {
   activeTab.value = tabId;
-  if (tabId === "channels") router.push("/channels");
+  if (tabId === "sessions") router.push("/chat");
+  else if (tabId === "channels") router.push("/channels");
   else if (tabId === "tasks") router.push("/tasks");
 }
 

@@ -106,7 +106,11 @@
             <div class="sub-label">Token 用量（近 30 天）</div>
             <div class="card-group">
               <div class="card-row">
-                <span class="row-label">API 调用次数</span>
+                <span class="row-label">会话数</span>
+                <span class="row-value">{{ (usageData.sessionCount || 0).toLocaleString() }}</span>
+              </div>
+              <div class="card-row">
+                <span class="row-label">消息数</span>
                 <span class="row-value">{{ usageData.totalRequests.toLocaleString() }}</span>
               </div>
               <div class="card-row">
@@ -117,9 +121,17 @@
                 <span class="row-label">输出 Tokens</span>
                 <span class="row-value">{{ usageData.totalCompletionTokens.toLocaleString() }}</span>
               </div>
-              <div class="card-row no-border">
+              <div v-if="usageData.cacheReadTokens" class="card-row">
+                <span class="row-label">缓存读取 Tokens</span>
+                <span class="row-value">{{ usageData.cacheReadTokens.toLocaleString() }}</span>
+              </div>
+              <div class="card-row">
                 <span class="row-label">总 Tokens</span>
                 <span class="row-value">{{ usageData.totalTokens.toLocaleString() }}</span>
+              </div>
+              <div v-if="usageData.toolCalls" class="card-row no-border">
+                <span class="row-label">工具调用次数</span>
+                <span class="row-value">{{ usageData.toolCalls.toLocaleString() }}</span>
               </div>
             </div>
           </template>
@@ -143,31 +155,14 @@
             </div>
           </template>
 
-          <!-- Key info -->
-          <template v-if="usageData.keyName || usageData.budgetDuration">
-            <div class="sub-label">Key 信息</div>
-            <div class="card-group">
-              <div v-if="usageData.keyName" class="card-row" :class="{ 'no-border': !usageData.budgetDuration }">
-                <span class="row-label">Key 名称</span>
-                <span class="row-value">{{ usageData.keyName }}</span>
-              </div>
-              <div v-if="usageData.budgetDuration" class="card-row" :class="{ 'no-border': !usageData.budgetResetAt }">
-                <span class="row-label">预算周期</span>
-                <span class="row-value">{{ usageData.budgetDuration }}</span>
-              </div>
-              <div v-if="usageData.budgetResetAt" class="card-row no-border">
-                <span class="row-label">预算重置时间</span>
-                <span class="row-value">{{ new Date(usageData.budgetResetAt).toLocaleString() }}</span>
-              </div>
-            </div>
-          </template>
+
 
           <div class="section-actions">
             <el-button size="small" @click="loadUsage" :loading="usageLoading">刷新</el-button>
           </div>
         </template>
 
-        <div class="section-footer">数据来源于 LiteLLM Proxy，需要 Gateway 运行中。</div>
+        <div class="section-footer">数据来源于 OpenClaw Gateway，需要 Gateway 运行中。</div>
       </div>
 
       <!-- Models & API -->
@@ -633,6 +628,10 @@ interface UsageStats {
   modelBreakdown: Record<string, { requests: number; promptTokens: number; completionTokens: number; spend: number }>;
   dailySpend: Record<string, number>;
   hasDetailedLogs: boolean;
+  cacheReadTokens?: number;
+  cacheWriteTokens?: number;
+  sessionCount?: number;
+  toolCalls?: number;
 }
 const usageData = ref<UsageStats | null>(null);
 const usageLoading = ref(false);
